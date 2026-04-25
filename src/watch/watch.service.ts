@@ -2,6 +2,7 @@ import { Injectable, Logger } from '@nestjs/common';
 import { Cron } from '@nestjs/schedule';
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
+import { FormatterService } from '../formatter/formatter.service';
 import { ScannerRpcError, UnknownTokenError } from '../scanner/scanner.errors';
 import { ScannerService } from '../scanner/scanner.service';
 import { TelegramBotService } from '../telegram/telegram-bot.service';
@@ -18,6 +19,7 @@ export class WatchService {
     private readonly prisma: PrismaService,
     private readonly scannerService: ScannerService,
     private readonly telegramBotService: TelegramBotService,
+    private readonly formatterService: FormatterService,
   ) {}
 
   async addWatchedToken(
@@ -111,7 +113,14 @@ export class WatchService {
         if (watchedToken.lastScore - result.score >= 15) {
           await this.telegramBotService.bot.api.sendMessage(
             watchedToken.user.telegramId.toString(),
-            `⚠️ ALERT: Token ${watchedToken.mintAddress} score dropped from ${watchedToken.lastScore} to ${result.score}! Re-check now.`,
+            this.formatterService.formatWatchAlertMessage(
+              watchedToken.mintAddress,
+              watchedToken.lastScore,
+              result.score,
+            ),
+            {
+              parse_mode: 'HTML',
+            },
           );
         }
 
@@ -168,7 +177,12 @@ export class WatchService {
     if (newFailures >= 3) {
       await this.telegramBotService.bot.api.sendMessage(
         watchedToken.user.telegramId.toString(),
-        `⚠️ Unable to monitor token ${watchedToken.mintAddress} — RPC issues. Will retry next cycle.`,
+        this.formatterService.formatWatchMonitoringIssueMessage(
+          watchedToken.mintAddress,
+        ),
+        {
+          parse_mode: 'HTML',
+        },
       );
     }
 

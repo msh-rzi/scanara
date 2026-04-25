@@ -24,107 +24,7 @@ import { AdminService } from '../admin/admin.service';
 const PRO_PLAN_PAYLOAD = 'sentinel-pro';
 const PRO_SUBSCRIPTION_PERIOD_SECONDS = 2_592_000;
 const LOADING_STEP_DELAY_MS = 600;
-
-const SCAN_USAGE_MESSAGE = [
-  'Usage: /scan <solana-mint-address>',
-  'Example: /scan So11111111111111111111111111111111111111112',
-].join('\n');
-
-const WATCH_USAGE_MESSAGE = [
-  'Usage: /watch <solana-mint-address>',
-  'Example: /watch EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v',
-].join('\n');
-
-const INVALID_ADDRESS_MESSAGE = [
-  '❌ Invalid token address.',
-  '',
-  'A Solana token address looks like:',
-  'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v',
-  '',
-  'Try /trending to find tokens to scan.',
-].join('\n');
-
-const RATE_LIMIT_MESSAGE = [
-  '⏰ Daily limit reached (3/3 scans used)',
-  '',
-  'Resets at midnight UTC.',
-  '',
-  '⭐ Upgrade to Pro for unlimited scans → /premium',
-].join('\n');
-
-const START_MESSAGE = [
-  '👋 Welcome to Sentinel!',
-  '🛡️ Your Solana token safety scanner',
-  'I analyze tokens before you invest:',
-  '✅ Mint authority checks',
-  '✅ Freeze authority checks',
-  '✅ Holder concentration',
-  '✅ Liquidity analysis',
-  '🔍 To scan a token:',
-  '/scan <token_address>',
-  'Example:',
-  '/scan EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v',
-  '🔥 Or check /trending tokens now!',
-  'Free: 3 scans/day',
-  '⭐ Pro: Unlimited — /premium',
-].join('\n');
-
-const HELP_MESSAGE = [
-  '📚 HOW TO READ YOUR SCAN',
-  '🔴 Mint Authority',
-  'If ACTIVE: devs can print unlimited tokens and crash the price',
-  'If REVOKED: supply is fixed — safer ✅',
-  '🔴 Freeze Authority',
-  "If ACTIVE: devs can freeze your wallet — you can't sell",
-  "If NONE: you're safe ✅",
-  '🟡 Holder Concentration',
-  'If top 10 hold >60%: high dump risk',
-  'If spread out: healthier distribution ✅',
-  'Always DYOR. Sentinel is a tool, not financial advice.',
-].join('\n');
-
-const PREMIUM_MESSAGE = [
-  '⭐ SENTINEL PRO',
-  'Free Plan:',
-  '',
-  '3 scans per day',
-  'Basic security checks',
-  '',
-  '🚀 Pro Plan — $9/month:',
-  '',
-  'Unlimited scans',
-  'Deep wallet history analysis',
-  'Auto-alerts for watched tokens',
-  'Priority support',
-  '',
-  '🏢 Group Plan — $25/month:',
-  '',
-  'Bot in your Telegram group',
-  'Unlimited scans for all members',
-  'Custom branding',
-  '',
-  '💳 Pay with Telegram Stars',
-].join('\n');
-
-const PRO_WATCH_ONLY_MESSAGE =
-  '⭐ /watch is a Sentinel Pro feature. Upgrade to Pro with /premium.';
-
-const LOADING_STEP_1 = ['⏳ Scanning token...', '🔍 Fetching on-chain data'].join(
-  '\n',
-);
-
-const LOADING_STEP_2 = [
-  '⏳ Scanning token...',
-  '🔍 Fetching on-chain data ✅',
-  '📊 Analyzing holders...',
-].join('\n');
-
-const LOADING_STEP_3 = [
-  '⏳ Scanning token...',
-  '🔍 Fetching on-chain data ✅',
-  '📊 Analyzing holders... ✅',
-  '🧮 Calculating score...',
-].join('\n');
+const EXAMPLE_MINT_ADDRESS = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
 
 function extractCommandArgument(messageText?: string): string | null {
   if (!messageText) {
@@ -160,14 +60,6 @@ function extractCallbackValue(data: string | undefined, prefix: string): string 
   }
 
   return data.slice(prefix.length);
-}
-
-function formatPriceChange(change: number | null): string {
-  if (change === null) {
-    return 'n/a';
-  }
-
-  return `${change >= 0 ? '+' : ''}${change.toFixed(2)}%`;
 }
 
 @Injectable()
@@ -208,28 +100,20 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
     const count = this.cacheService.getRateLimit(key);
 
     if (count >= 5) {
-      await this.replyInChat(ctx, "🛑 Slow down! Max 5 requests per minute.\nTry again in a moment.");
+      await this.replyInChat(
+        ctx,
+        [
+          '🛑 <b>Slow Down</b>',
+          this.formatterService.divider(),
+          'Max 5 requests per minute.',
+          '<i>Try again in a moment.</i>',
+        ].join('\n'),
+      );
       return false;
     }
 
     this.cacheService.setRateLimit(key);
     return true;
-  }
-
-  private formatRelativeTime(isoTimestamp: string): string {
-    const elapsedMs = Date.now() - new Date(isoTimestamp).getTime();
-
-    if (elapsedMs < 60_000) {
-      return 'just now';
-    }
-
-    if (elapsedMs < 3_600_000) {
-      const minutes = Math.max(Math.floor(elapsedMs / 60_000), 1);
-      return `${minutes}m ago`;
-    }
-
-    const hours = Math.max(Math.floor(elapsedMs / 3_600_000), 1);
-    return `${hours}h ago`;
   }
 
   async onModuleInit() {
@@ -297,7 +181,7 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
           ctx.from!.username,
         );
 
-        await this.bot.api.sendMessage(chatId, START_MESSAGE, {
+        await this.sendHtmlMessage(chatId, this.formatterService.formatStartMessage(), {
           reply_markup: this.buildStartKeyboard(),
         });
 
@@ -305,16 +189,14 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
         const isNewUser = user.createdAt > new Date(Date.now() - 60000); // Created within last minute
         if (isNewUser) {
           await this.sleep(2000); // 2 seconds delay
-          await this.bot.api.sendMessage(
+          await this.sendHtmlMessage(
             chatId,
-            [
-              '💡 Quick tip: paste any Solana token address to scan it.',
-              '',
-              'Try this example (USDC):',
-              'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v',
-            ].join('\n'),
+            this.formatterService.formatQuickTipMessage(EXAMPLE_MINT_ADDRESS),
             {
-              reply_markup: new InlineKeyboard().text('🔍 Scan USDC as example', 'scan:EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v'),
+              reply_markup: new InlineKeyboard().text(
+                '🔍 Scan USDC as example',
+                `scan:${EXAMPLE_MINT_ADDRESS}`,
+              ),
             },
           );
         }
@@ -334,7 +216,7 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
           return;
         }
 
-        await this.bot.api.sendMessage(chatId, HELP_MESSAGE);
+        await this.sendHtmlMessage(chatId, this.formatterService.formatHelpMessage());
       } catch (error) {
         Sentry.captureException(error);
         throw error;
@@ -369,7 +251,10 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
         const mintAddress = extractCommandArgument(ctx.message?.text);
 
         if (!mintAddress) {
-          await this.replyInChat(ctx, 'Usage: /unwatch <solana-mint-address>');
+          await this.replyInChat(
+            ctx,
+            this.formatterService.formatUsageMessage('/unwatch', EXAMPLE_MINT_ADDRESS),
+          );
           return;
         }
 
@@ -427,7 +312,10 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
         const mintAddress = extractCommandArgument(ctx.message?.text);
 
         if (!mintAddress) {
-          await this.replyInChat(ctx, SCAN_USAGE_MESSAGE);
+          await this.replyInChat(
+            ctx,
+            this.formatterService.formatUsageMessage('/scan', EXAMPLE_MINT_ADDRESS),
+          );
           return;
         }
 
@@ -445,7 +333,10 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
         const mintAddress = extractCommandArgument(ctx.message?.text);
 
         if (!mintAddress) {
-          await this.replyInChat(ctx, WATCH_USAGE_MESSAGE);
+          await this.replyInChat(
+            ctx,
+            this.formatterService.formatUsageMessage('/watch', EXAMPLE_MINT_ADDRESS),
+          );
           return;
         }
 
@@ -458,7 +349,10 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
 
     this.bot.callbackQuery('scan_prompt', async (ctx) => {
       await ctx.answerCallbackQuery();
-      await this.replyInChat(ctx, SCAN_USAGE_MESSAGE);
+      await this.replyInChat(
+        ctx,
+        this.formatterService.formatUsageMessage('/scan', EXAMPLE_MINT_ADDRESS),
+      );
     });
 
     this.bot.callbackQuery('show_trending', async (ctx) => {
@@ -473,7 +367,7 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
 
     this.bot.callbackQuery('how_to_read', async (ctx) => {
       await ctx.answerCallbackQuery();
-      await this.replyInChat(ctx, HELP_MESSAGE);
+      await this.replyInChat(ctx, this.formatterService.formatHelpMessage());
     });
 
     this.bot.callbackQuery('buy_pro', async (ctx) => {
@@ -608,9 +502,9 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
 
         await this.userService.activatePremium(user.id, premiumUntil);
 
-        await this.bot.api.sendMessage(
+        await this.sendHtmlMessage(
           chatId,
-          '🎉 Welcome to Sentinel Pro! Enjoy unlimited scans.',
+          this.formatterService.formatPaymentSuccessMessage(),
         );
       } catch (error) {
         this.logger.error(
@@ -618,9 +512,9 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
           error instanceof Error ? error.stack : undefined,
         );
 
-        await this.bot.api.sendMessage(
+        await this.sendHtmlMessage(
           chatId,
-          'Payment received, but Pro activation failed. Please contact support.',
+          this.formatterService.formatPaymentActivationFailedMessage(),
         );
       }
     });
@@ -679,14 +573,17 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
     }
 
     if (!isValidSolanaPublicKey(mintAddress)) {
-      await this.bot.api.sendMessage(chatId, INVALID_ADDRESS_MESSAGE);
+      await this.sendHtmlMessage(
+        chatId,
+        this.formatterService.formatInvalidAddressMessage(),
+      );
       return;
     }
 
     if (!ctx.from) {
-      await this.bot.api.sendMessage(
+      await this.sendHtmlMessage(
         chatId,
-        'Unable to identify your Telegram account for this scan.',
+        this.formatterService.formatAccountRequiredMessage('scan'),
       );
       return;
     }
@@ -698,7 +595,16 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
     const canScan = await this.userService.canScan(user.id);
 
     if (!canScan) {
-      await this.bot.api.sendMessage(chatId, RATE_LIMIT_MESSAGE);
+      await this.sendHtmlMessage(
+        chatId,
+        this.formatterService.formatRateLimitMessage(),
+        {
+          reply_markup: new InlineKeyboard().text(
+            '⭐ Go Pro — $9/month',
+            'upgrade',
+          ),
+        },
+      );
       return;
     }
 
@@ -714,7 +620,7 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
         this.scanService.create(user.id, mintAddress, result),
       ]);
 
-      await this.bot.api.sendMessage(
+      await this.sendHtmlMessage(
         chatId,
         this.formatterService.formatResult(result),
         {
@@ -727,7 +633,7 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
         error instanceof Error ? error.stack : undefined,
       );
 
-      await this.bot.api.sendMessage(chatId, this.getScanErrorMessage(error));
+      await this.sendHtmlMessage(chatId, this.getScanErrorMessage(error));
     }
   }
 
@@ -736,7 +642,10 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
     mintAddress: string,
     bypassCache: boolean,
   ): Promise<ScanResult> {
-    const loadingMessage = await this.bot.api.sendMessage(chatId, LOADING_STEP_1);
+    const loadingMessage = await this.sendHtmlMessage(
+      chatId,
+      this.formatterService.formatScanProgressMessage(mintAddress, 1),
+    );
     let lastUpdateAt = Date.now();
 
     const advanceLoadingMessage = async (text: string): Promise<void> => {
@@ -746,7 +655,7 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
         await sleep(LOADING_STEP_DELAY_MS - elapsedMs);
       }
 
-      await this.bot.api.editMessageText(chatId, loadingMessage.message_id, text);
+      await this.editHtmlMessage(chatId, loadingMessage.message_id, text);
       lastUpdateAt = Date.now();
     };
 
@@ -755,11 +664,21 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
         bypassCache,
         onProgress: async (stage: ScanProgressStage) => {
           if (stage === 'fetched_on_chain_data') {
-            await advanceLoadingMessage(LOADING_STEP_2);
+            await advanceLoadingMessage(
+              this.formatterService.formatScanProgressMessage(mintAddress, 2),
+            );
+          }
+
+          if (stage === 'analyzed_holders') {
+            await advanceLoadingMessage(
+              this.formatterService.formatScanProgressMessage(mintAddress, 3),
+            );
           }
 
           if (stage === 'calculating_score') {
-            await advanceLoadingMessage(LOADING_STEP_3);
+            await advanceLoadingMessage(
+              this.formatterService.formatScanProgressMessage(mintAddress, 4),
+            );
           }
         },
       });
@@ -787,14 +706,17 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
     }
 
     if (!isValidSolanaPublicKey(mintAddress)) {
-      await this.bot.api.sendMessage(chatId, INVALID_ADDRESS_MESSAGE);
+      await this.sendHtmlMessage(
+        chatId,
+        this.formatterService.formatInvalidAddressMessage(),
+      );
       return;
     }
 
     if (!ctx.from) {
-      await this.bot.api.sendMessage(
+      await this.sendHtmlMessage(
         chatId,
-        'Unable to identify your Telegram account for this request.',
+        this.formatterService.formatAccountRequiredMessage('request'),
       );
       return;
     }
@@ -806,7 +728,9 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
     const hasPremium = await this.userService.canUsePremium(user.id);
 
     if (!hasPremium) {
-      await this.bot.api.sendMessage(chatId, PRO_WATCH_ONLY_MESSAGE);
+      await this.sendHtmlMessage(chatId, this.formatterService.formatWatchProOnlyMessage(), {
+        reply_markup: new InlineKeyboard().text('⭐ Go Pro', 'upgrade'),
+      });
       return;
     }
 
@@ -821,28 +745,24 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
       );
 
       if (addResult === 'exists') {
-        await this.bot.api.sendMessage(
+        await this.sendHtmlMessage(
           chatId,
-          '👀 You are already watching this token.',
+          this.formatterService.formatWatchAlreadyExistsMessage(mintAddress),
         );
         return;
       }
 
       if (addResult === 'limit_reached') {
-        await this.bot.api.sendMessage(
+        await this.sendHtmlMessage(
           chatId,
-          `⭐ Watch limit reached (${WATCH_LIMIT}/${WATCH_LIMIT}).`,
+          this.formatterService.formatWatchLimitMessage(WATCH_LIMIT),
         );
         return;
       }
 
-      await this.bot.api.sendMessage(
+      await this.sendHtmlMessage(
         chatId,
-        [
-          `👀 Watching ${mintAddress}`,
-          `Current score: ${result.score}/100`,
-          'I will alert you if the score drops by 15+ points.',
-        ].join('\n'),
+        this.formatterService.formatWatchCreatedMessage(mintAddress, result.score),
       );
     } catch (error) {
       this.logger.error(
@@ -850,7 +770,7 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
         error instanceof Error ? error.stack : undefined,
       );
 
-      await this.bot.api.sendMessage(chatId, this.getScanErrorMessage(error));
+      await this.sendHtmlMessage(chatId, this.getScanErrorMessage(error));
     }
   }
 
@@ -862,9 +782,9 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
     }
 
     if (!ctx.from) {
-      await this.bot.api.sendMessage(
+      await this.sendHtmlMessage(
         chatId,
-        'Unable to identify your Telegram account for this request.',
+        this.formatterService.formatAccountRequiredMessage('request'),
       );
       return;
     }
@@ -877,33 +797,25 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
     const scans = await this.userService.getScanHistory(user.id, 1, 10);
 
     if (scans.length === 0) {
-      await this.bot.api.sendMessage(
-        chatId,
-        '📜 You have no scan history yet.\n\nStart by scanning a token with /scan <address>',
-      );
+      await this.sendHtmlMessage(chatId, this.formatterService.formatNoHistoryMessage());
       return;
     }
 
-    const historyText = scans
-      .map((scan: any) => {
-        const shortAddress = scan.mintAddress.slice(0, 6) + '...' + scan.mintAddress.slice(-4);
-        const verdict = scan.score >= 80 ? '🟢' : scan.score >= 60 ? '🟡' : scan.score >= 40 ? '🟠' : '🔴';
-        const timeAgo = this.formatRelativeTime(scan.createdAt);
-        return `📍 ${shortAddress}\n🎯 Score: ${scan.score}/100 ${verdict}\n📅 ${timeAgo}`;
-      })
-      .join('\n\n');
-
     const keyboard = scans.map((scan: any) => [
-      InlineKeyboard.text(`🔍 Re-scan ${scan.mintAddress.slice(0, 6)}...`, `scan:${scan.mintAddress}`),
+      InlineKeyboard.text('🔍 Re-scan', `re_scan:${scan.mintAddress}`),
     ]);
 
     if (scans.length === 10) {
       keyboard.push([InlineKeyboard.text('▶ Next', 'history:2')]);
     }
 
-    await this.bot.api.sendMessage(chatId, `📜 Your Scan History:\n\n${historyText}`, {
+    await this.sendHtmlMessage(
+      chatId,
+      this.formatterService.formatHistoryMessage(scans, 1),
+      {
       reply_markup: InlineKeyboard.from(keyboard),
-    });
+      },
+    );
   }
 
   private async handleHistoryPage(ctx: Context, page: number): Promise<void> {
@@ -914,9 +826,9 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
     }
 
     if (!ctx.from) {
-      await this.bot.api.sendMessage(
+      await this.sendHtmlMessage(
         chatId,
-        'Unable to identify your Telegram account for this request.',
+        this.formatterService.formatAccountRequiredMessage('request'),
       );
       return;
     }
@@ -929,24 +841,12 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
     const scans = await this.userService.getScanHistory(user.id, page, 10);
 
     if (scans.length === 0) {
-      await this.bot.api.sendMessage(
-        chatId,
-        '📜 No more scans in history.',
-      );
+      await this.sendHtmlMessage(chatId, this.formatterService.formatNoMoreHistoryMessage());
       return;
     }
 
-    const historyText = scans
-      .map((scan: any) => {
-        const shortAddress = scan.mintAddress.slice(0, 6) + '...' + scan.mintAddress.slice(-4);
-        const verdict = scan.score >= 80 ? '🟢' : scan.score >= 60 ? '🟡' : scan.score >= 40 ? '🟠' : '🔴';
-        const timeAgo = this.formatRelativeTime(scan.createdAt);
-        return `📍 ${shortAddress}\n🎯 Score: ${scan.score}/100 ${verdict}\n📅 ${timeAgo}`;
-      })
-      .join('\n\n');
-
     const keyboard = scans.map((scan: any) => [
-      InlineKeyboard.text(`🔍 Re-scan ${scan.mintAddress.slice(0, 6)}...`, `scan:${scan.mintAddress}`),
+      InlineKeyboard.text('🔍 Re-scan', `re_scan:${scan.mintAddress}`),
     ]);
 
     const navButtons: any[] = [];
@@ -960,9 +860,13 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
       keyboard.push(navButtons);
     }
 
-    await this.bot.api.sendMessage(chatId, `📜 Your Scan History (Page ${page}):\n\n${historyText}`, {
+    await this.sendHtmlMessage(
+      chatId,
+      this.formatterService.formatHistoryMessage(scans, page),
+      {
       reply_markup: InlineKeyboard.from(keyboard),
-    });
+      },
+    );
   }
 
   private async handleMyWatchCommand(ctx: Context): Promise<void> {
@@ -973,9 +877,9 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
     }
 
     if (!ctx.from) {
-      await this.bot.api.sendMessage(
+      await this.sendHtmlMessage(
         chatId,
-        'Unable to identify your Telegram account for this request.',
+        this.formatterService.formatAccountRequiredMessage('request'),
       );
       return;
     }
@@ -992,27 +896,24 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
     });
 
     if (watchedTokens.length === 0) {
-      await this.bot.api.sendMessage(
+      await this.sendHtmlMessage(
         chatId,
-        '👀 You have no watched tokens yet.\n\nUse /watch <address> to start monitoring.',
+        this.formatterService.formatNoWatchedTokensMessage(),
       );
       return;
     }
-
-    const watchText = watchedTokens
-      .map((token) => {
-        const shortAddress = token.mintAddress.slice(0, 6) + '...' + token.mintAddress.slice(-4);
-        return `👀 ${shortAddress}\n🎯 Last Score: ${token.lastScore}/100`;
-      })
-      .join('\n\n');
 
     const keyboard = watchedTokens.map((token) => [
       InlineKeyboard.text(`❌ Unwatch ${token.mintAddress.slice(0, 6)}...`, `unwatch:${token.mintAddress}`),
     ]);
 
-    await this.bot.api.sendMessage(chatId, `👀 Your Watched Tokens:\n\n${watchText}`, {
+    await this.sendHtmlMessage(
+      chatId,
+      this.formatterService.formatWatchedTokensMessage(watchedTokens),
+      {
       reply_markup: InlineKeyboard.from(keyboard),
-    });
+      },
+    );
   }
 
   private async handleUnwatchCommand(ctx: Context, mintAddress: string): Promise<void> {
@@ -1023,14 +924,17 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
     }
 
     if (!isValidSolanaPublicKey(mintAddress)) {
-      await this.bot.api.sendMessage(chatId, INVALID_ADDRESS_MESSAGE);
+      await this.sendHtmlMessage(
+        chatId,
+        this.formatterService.formatInvalidAddressMessage(),
+      );
       return;
     }
 
     if (!ctx.from) {
-      await this.bot.api.sendMessage(
+      await this.sendHtmlMessage(
         chatId,
-        'Unable to identify your Telegram account for this request.',
+        this.formatterService.formatAccountRequiredMessage('request'),
       );
       return;
     }
@@ -1042,17 +946,10 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
 
     const removed = await this.watchService.removeWatch(user.id, mintAddress);
 
-    if (removed) {
-      await this.bot.api.sendMessage(
-        chatId,
-        `✅ Stopped watching ${mintAddress.slice(0, 6)}...${mintAddress.slice(-4)}`,
-      );
-    } else {
-      await this.bot.api.sendMessage(
-        chatId,
-        `🤷 You are not watching ${mintAddress.slice(0, 6)}...${mintAddress.slice(-4)}`,
-      );
-    }
+    await this.sendHtmlMessage(
+      chatId,
+      this.formatterService.formatUnwatchResultMessage(mintAddress, removed),
+    );
   }
 
   private async handleStatsCommand(ctx: Context): Promise<void> {
@@ -1068,31 +965,13 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
 
     const adminIds = process.env.ADMIN_IDS?.split(',').map(id => id.trim()) || [];
     if (!adminIds.includes(ctx.from.id.toString())) {
-      await this.bot.api.sendMessage(chatId, '❌ Access denied.');
+      await this.sendHtmlMessage(chatId, this.formatterService.formatAccessDeniedMessage());
       return;
     }
 
     const stats = await this.adminService.getStats();
 
-    const topTokensText = stats.topScannedTokens
-      .map((token, index) => `${index + 1}. ${token.address.slice(0, 6)}... — ${token.scans} scans`)
-      .join('\n');
-
-    const message = [
-      '📊 SENTINEL STATS',
-      '━━━━━━━━━━━━━━━━━━━━━━',
-      `👥 Total Users: ${stats.totalUsers}`,
-      `⭐ Premium: ${stats.premiumUsers} (${stats.conversionRate}%)`,
-      `🆓 Free: ${stats.freeUsers}`,
-      '',
-      `🔍 Total Scans: ${stats.totalScans}`,
-      `📅 Today: ${stats.scansToday}`,
-      '',
-      '🔥 Top Tokens:',
-      topTokensText,
-    ].join('\n');
-
-    await this.bot.api.sendMessage(chatId, message);
+    await this.sendHtmlMessage(chatId, this.formatterService.formatStatsMessage(stats));
   }
 
   private async handleShareCommand(ctx: Context, mintAddress: string): Promise<void> {
@@ -1123,22 +1002,15 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
     });
 
     if (!lastScan) {
-      await this.bot.api.sendMessage(chatId, 'No scan result found to share.');
+      await this.sendHtmlMessage(chatId, this.formatterService.formatNoShareResultMessage());
       return;
     }
 
     const result = lastScan.result as any;
-    const shortAddress = mintAddress.slice(0, 6) + '...' + mintAddress.slice(-4);
-    const verdict = result.score >= 80 ? '🟢' : result.score >= 60 ? '🟡' : result.score >= 40 ? '🟠' : '🔴';
-
-    const shareMessage = [
-      '🛡️ I just scanned this token with Sentinel:',
-      '',
-      `📍 ${shortAddress}`,
-      `🎯 Score: ${result.score}/100 ${verdict}`,
-      '',
-      'Scan your tokens → @SentinelBot',
-    ].join('\n');
+    const shareMessage = this.formatterService.formatShareText(
+      mintAddress,
+      result.score,
+    );
 
     await ctx.answerCallbackQuery({
       text: 'Share link copied!',
@@ -1159,7 +1031,7 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
     try {
       const result = await this.scannerService.analyzeToken(mintAddress);
 
-      await this.bot.api.sendMessage(
+      await this.sendHtmlMessage(
         chatId,
         this.formatterService.formatTopHoldersDetail(result),
       );
@@ -1169,7 +1041,7 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
         error instanceof Error ? error.stack : undefined,
       );
 
-      await this.bot.api.sendMessage(chatId, this.getScanErrorMessage(error));
+      await this.sendHtmlMessage(chatId, this.getScanErrorMessage(error));
     }
   }
 
@@ -1178,24 +1050,14 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
       const tokens = await this.dexScreenerService.getTrendingTokens(5);
 
       if (tokens.length === 0) {
-        await this.bot.api.sendMessage(
+        await this.sendHtmlMessage(
           chatId,
-          '🔥 No trending Solana tokens are available right now.',
+          this.formatterService.formatNoTrendingTokensMessage(),
         );
         return;
       }
 
-      const lines = ['🔥 TRENDING SOLANA TOKENS', ''];
-
-      for (const [index, token] of tokens.entries()) {
-        lines.push(
-          `${index + 1}. ${token.name} (${token.symbol})`,
-          `24h: ${formatPriceChange(token.priceChange24h)}`,
-          '',
-        );
-      }
-
-      await this.bot.api.sendMessage(chatId, lines.join('\n').trim(), {
+      await this.sendHtmlMessage(chatId, this.formatterService.formatTrendingMessage(tokens), {
         reply_markup: this.buildTrendingKeyboard(tokens),
       });
     } catch (error) {
@@ -1204,9 +1066,9 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
         error instanceof Error ? error.stack : undefined,
       );
 
-      await this.bot.api.sendMessage(
+      await this.sendHtmlMessage(
         chatId,
-        '🔥 Trending tokens are unavailable right now. Try again shortly.',
+        this.formatterService.formatTrendingUnavailableMessage(),
       );
     }
   }
@@ -1222,9 +1084,9 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
   }
 
   private async sendPremiumMessage(chatId: number | string): Promise<void> {
-    await this.bot.api.sendMessage(chatId, PREMIUM_MESSAGE, {
+    await this.sendHtmlMessage(chatId, this.formatterService.formatPremiumMessage(), {
       reply_markup: new InlineKeyboard().text(
-        '💳 Pay with Stars — Pro',
+        '💳 Upgrade to Pro — 900 ⭐',
         'buy_pro',
       ),
     });
@@ -1244,9 +1106,9 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
       );
 
       if (await this.userService.canUsePremium(user.id)) {
-        await this.bot.api.sendMessage(
+        await this.sendHtmlMessage(
           chatId,
-          '⭐ Sentinel Pro is already active for your account.',
+          this.formatterService.formatProAlreadyActiveMessage(),
         );
         return;
       }
@@ -1289,7 +1151,30 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
       return;
     }
 
-    await this.bot.api.sendMessage(chatId, text);
+    await this.sendHtmlMessage(chatId, text);
+  }
+
+  private async sendHtmlMessage(
+    chatId: number | string,
+    text: string,
+    options: Record<string, unknown> = {},
+  ) {
+    return this.bot.api.sendMessage(chatId, text, {
+      parse_mode: 'HTML',
+      ...options,
+    });
+  }
+
+  private async editHtmlMessage(
+    chatId: number | string,
+    messageId: number,
+    text: string,
+    options: Record<string, unknown> = {},
+  ) {
+    return this.bot.api.editMessageText(chatId, messageId, text, {
+      parse_mode: 'HTML',
+      ...options,
+    });
   }
 
   private buildStartKeyboard(): InlineKeyboard {
@@ -1330,14 +1215,14 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
 
   private getScanErrorMessage(error: unknown): string {
     if (error instanceof ScannerRpcError) {
-      return '🔧 Helius RPC is having issues. Try again in a moment.';
+      return this.formatterService.formatRpcUnavailableMessage();
     }
 
     if (error instanceof UnknownTokenError) {
-      return "🤷 Token not found. Make sure it's a valid Solana mint address.";
+      return this.formatterService.formatTokenNotFoundMessage();
     }
 
-    return '⚠️ Scan failed. Please try again shortly.';
+    return this.formatterService.formatGenericScanFailedMessage();
   }
 
   private async safeDeleteMessage(
