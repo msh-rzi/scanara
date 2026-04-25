@@ -1,0 +1,28 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+model User {
+  id         Int      @id @default(autoincrement())
+  telegramId BigInt   @unique
+  username   String?
+  scansToday Int      @default(0)
+  lastScanAt DateTime?
+  isPremium  Boolean  @default(false)
+  createdAt  DateTime @default(now())
+  scans      Scan[]
+}
+
+model Scan {
+  id          Int      @id @default(autoincrement())
+  userId      Int
+  mintAddress String
+  score       Int
+  result      Json
+  createdAt   DateTime @default(now())
+  user        User     @relation(fields: [userId], references: [id])
+}
