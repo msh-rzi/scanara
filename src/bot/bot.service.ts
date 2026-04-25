@@ -199,6 +199,39 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
     return new Promise(resolve => setTimeout(resolve, ms));
   }
 
+  private async checkRateLimit(ctx: Context): Promise<boolean> {
+    if (!ctx.from) {
+      return true; // Allow if no user
+    }
+
+    const key = ctx.from.id.toString();
+    const count = this.cacheService.getRateLimit(key);
+
+    if (count >= 5) {
+      await this.replyInChat(ctx, "🛑 Slow down! Max 5 requests per minute.\nTry again in a moment.");
+      return false;
+    }
+
+    this.cacheService.setRateLimit(key);
+    return true;
+  }
+
+  private formatRelativeTime(isoTimestamp: string): string {
+    const elapsedMs = Date.now() - new Date(isoTimestamp).getTime();
+
+    if (elapsedMs < 60_000) {
+      return 'just now';
+    }
+
+    if (elapsedMs < 3_600_000) {
+      const minutes = Math.max(Math.floor(elapsedMs / 60_000), 1);
+      return `${minutes}m ago`;
+    }
+
+    const hours = Math.max(Math.floor(elapsedMs / 3_600_000), 1);
+    return `${hours}h ago`;
+  }
+
   async onModuleInit() {
     await this.runStartupHealthChecks();
     await this.bot.init();
@@ -260,8 +293,8 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
         }
 
         const user = await this.userService.findOrCreate(
-          BigInt(ctx.from.id),
-          ctx.from.username,
+          BigInt(ctx.from!.id),
+          ctx.from!.username,
         );
 
         await this.bot.api.sendMessage(chatId, START_MESSAGE, {
@@ -916,7 +949,7 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
       InlineKeyboard.text(`🔍 Re-scan ${scan.mintAddress.slice(0, 6)}...`, `scan:${scan.mintAddress}`),
     ]);
 
-    const navButtons = [];
+    const navButtons: any[] = [];
     if (page > 1) {
       navButtons.push(InlineKeyboard.text('◀ Prev', `history:${page - 1}`));
     }

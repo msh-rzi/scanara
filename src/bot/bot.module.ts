@@ -1,4 +1,5 @@
 import { Module } from '@nestjs/common';
+import { AdminModule } from '../admin/admin.module';
 import { DexScreenerModule } from '../dexscreener/dexscreener.module';
 import { BotService } from './bot.service';
 import { FormatterModule } from '../formatter/formatter.module';
@@ -10,6 +11,7 @@ import { WatchModule } from '../watch/watch.module';
 
 @Module({
   imports: [
+    AdminModule,
     DexScreenerModule,
     FormatterModule,
     ScanModule,
