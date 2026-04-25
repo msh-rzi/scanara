@@ -15,7 +15,7 @@ export class PrismaService
     }
 
     super({
-      adapter: new PrismaPg(databaseUrl),
+      adapter: new PrismaPg({ connectionString: databaseUrl }),
     });
   }
 

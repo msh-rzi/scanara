@@ -1,24 +1,18 @@
-type ApiCall = (
-  method: string,
-  payload: Record<string, unknown>,
-  signal?: AbortSignal,
-) => Promise<unknown>;
+import type { RawApi, Transformer } from 'grammy';
 
-export function parseMode(mode: 'HTML') {
-  return async (
-    prev: ApiCall,
-    method: string,
-    payload: Record<string, unknown> = {},
-    signal?: AbortSignal,
-  ) => {
-    const nextPayload =
-      payload.parse_mode === undefined
-        ? {
-            ...payload,
-            parse_mode: mode,
-          }
-        : payload;
+export function parseMode(mode: 'HTML'): Transformer<RawApi> {
+  return async (prev, method, payload, signal) => {
+    if (payload && typeof payload === 'object' && !('parse_mode' in payload)) {
+      return prev(
+        method,
+        {
+          ...payload,
+          parse_mode: mode,
+        },
+        signal,
+      );
+    }
 
-    return prev(method, nextPayload, signal);
+    return prev(method, payload, signal);
   };
 }
