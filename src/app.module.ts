@@ -1,5 +1,6 @@
 import { Module } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
+import { ScheduleModule } from '@nestjs/schedule';
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
 import { validateEnv } from './config/env.validation';
@@ -10,7 +11,9 @@ import { PrismaModule } from './prisma/prisma.module';
 import { ScanModule } from './scan/scan.module';
 import { ScannerModule } from './scanner/scanner.module';
 import { SolanaModule } from './solana/solana.module';
+import { TelegramModule } from './telegram/telegram.module';
 import { UserModule } from './user/user.module';
+import { AdminModule } from './admin/admin.module';
 
 @Module({
   imports: [
@@ -19,6 +22,7 @@ import { UserModule } from './user/user.module';
       envFilePath: '.env',
       validate: validateEnv,
     }),
+    ScheduleModule.forRoot(),
     PrismaModule,
     CacheModule,
     SolanaModule,
@@ -26,7 +30,9 @@ import { UserModule } from './user/user.module';
     FormatterModule,
     UserModule,
     ScanModule,
+    TelegramModule,
     BotModule,
+    AdminModule,
   ],
   controllers: [AppController],
   providers: [AppService],

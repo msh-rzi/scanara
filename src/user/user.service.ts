@@ -1,5 +1,5 @@
 import { Injectable } from '@nestjs/common';
-import { User } from '@prisma/client';
+import { Prisma, User } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 
 function isSameUtcDay(left: Date, right: Date): boolean {
@@ -50,6 +50,11 @@ export class UserService {
     return user.isPremium || user.scansToday < 3;
   }
 
+  async canUsePremium(userId: number): Promise<boolean> {
+    const user = await this.getUserWithDailyReset(userId);
+    return user.isPremium;
+  }
+
   async recordScan(userId: number): Promise<void> {
     await this.getUserWithDailyReset(userId);
     await this.prisma.user.update({
@@ -65,22 +70,57 @@ export class UserService {
     });
   }
 
+  async activatePremium(userId: number, premiumUntil?: Date | null): Promise<User> {
+    return this.prisma.user.update({
+      where: {
+        id: userId,
+      },
+      data: {
+        isPremium: true,
+        premiumUntil: premiumUntil ?? null,
+      },
+    });
+  }
+
+  async getScanHistory(userId: number, page = 1, limit = 10): Promise<any[]> {
+    const offset = (page - 1) * limit;
+    return this.prisma.scan.findMany({
+      where: {
+        userId,
+      },
+      orderBy: {
+        createdAt: 'desc',
+      },
+      take: limit,
+      skip: offset,
+    });
+  }
+
   private async getUserWithDailyReset(userId: number): Promise<User> {
+    const now = new Date();
     const user = await this.prisma.user.findUniqueOrThrow({
       where: {
         id: userId,
       },
     });
 
-    if (user.lastScanAt && !isSameUtcDay(user.lastScanAt, new Date())) {
+    const updates: Prisma.UserUpdateInput = {};
+
+    if (user.lastScanAt && !isSameUtcDay(user.lastScanAt, now)) {
+      updates.scansToday = 0;
+      updates.lastScanAt = null;
+    }
+
+    if (user.premiumUntil && user.premiumUntil <= now) {
+      updates.isPremium = false;
+    }
+
+    if (Object.keys(updates).length > 0) {
       return this.prisma.user.update({
         where: {
           id: userId,
         },
-        data: {
-          scansToday: 0,
-          lastScanAt: null,
-        },
+        data: updates,
       });
     }
 

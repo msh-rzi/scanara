@@ -35,4 +35,14 @@ export class CacheService {
   delete(key: string): void {
     this.cache.delete(key);
   }
+
+  getRateLimit(key: string): number {
+    const count = this.get<number>(`ratelimit:${key}`) ?? 0;
+    return count;
+  }
+
+  setRateLimit(key: string): void {
+    const current = this.getRateLimit(key);
+    this.set(`ratelimit:${key}`, current + 1, 60); // 60 seconds TTL
+  }
 }

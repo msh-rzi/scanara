@@ -7,14 +7,18 @@ datasource db {
 }
 
 model User {
-  id         Int      @id @default(autoincrement())
-  telegramId BigInt   @unique
-  username   String?
-  scansToday Int      @default(0)
-  lastScanAt DateTime?
-  isPremium  Boolean  @default(false)
-  createdAt  DateTime @default(now())
-  scans      Scan[]
+  id           Int            @id @default(autoincrement())
+  telegramId   BigInt         @unique
+  username     String?
+  scansToday   Int            @default(0)
+  lastScanAt   DateTime?
+  isPremium    Boolean        @default(false)
+  premiumUntil DateTime?
+  createdAt    DateTime       @default(now())
+  scans        Scan[]
+  watchedTokens WatchedToken[]
+
+  @@index([telegramId])
 }
 
 model Scan {
@@ -25,4 +29,21 @@ model Scan {
   result      Json
   createdAt   DateTime @default(now())
   user        User     @relation(fields: [userId], references: [id])
+
+  @@index([userId])
+  @@index([createdAt])
+  @@index([mintAddress])
+}
+
+model WatchedToken {
+  id          Int      @id @default(autoincrement())
+  userId      Int
+  mintAddress String
+  lastScore   Int
+  createdAt   DateTime @default(now())
+  consecutiveFailures Int @default(0)
+  user        User     @relation(fields: [userId], references: [id])
+
+  @@unique([userId, mintAddress])
+  @@index([userId])
 }

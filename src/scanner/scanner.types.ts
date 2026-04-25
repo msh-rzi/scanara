@@ -1,5 +1,10 @@
 import { TokenHolder } from '../solana/solana.types';
 
+export type ScanProgressStage =
+  | 'fetched_on_chain_data'
+  | 'analyzed_holders'
+  | 'calculating_score';
+
 export interface ScanResult {
   score: number;
   mintAddress: string;
@@ -17,10 +22,16 @@ export interface ScanResult {
       holders: TokenHolder[];
       percentage: number;
     };
+    liquidity: {
+      isStable: boolean | null;
+      usd: number | null;
+    };
   };
   scannedAt: string;
   metadata: {
     isNewToken: boolean | null;
     tokenAgeHours: number | null;
+    name?: string;
+    symbol?: string;
   };
 }
