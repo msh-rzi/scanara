@@ -1394,11 +1394,13 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
       .filter((token): token is TrendingToken => token !== null)
       .slice(0, limit);
 
-    this.cacheService.set(
-      TRENDING_CACHE_KEY,
-      validatedTokens,
-      TRENDING_CACHE_TTL_SECONDS,
-    );
+    if (validatedTokens.length > 0) {
+      this.cacheService.set(
+        TRENDING_CACHE_KEY,
+        validatedTokens,
+        TRENDING_CACHE_TTL_SECONDS,
+      );
+    }
 
     return validatedTokens;
   }

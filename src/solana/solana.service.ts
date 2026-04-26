@@ -1,6 +1,11 @@
 import { Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { getMint } from '@solana/spl-token';
+import {
+  getMint,
+  TOKEN_2022_PROGRAM_ID,
+  TOKEN_PROGRAM_ID,
+  TokenInvalidAccountOwnerError,
+} from '@solana/spl-token';
 import {
   Connection,
   ParsedAccountData,
@@ -13,6 +18,8 @@ import { MintInfo, TokenHolder } from './solana.types';
 type ParsedTokenAccountInfo = {
   owner?: string;
 };
+
+const TOKEN_ACCOUNT_PROGRAMS = new Set(['spl-token', 'spl-token-2022']);
 
 function toPercentage(value: bigint, total: bigint): number {
   if (total === 0n) {
@@ -39,11 +46,7 @@ export class SolanaService {
 
   async getMintInfo(address: string): Promise<MintInfo> {
     try {
-      const mint = await getMint(
-        this.connection,
-        new PublicKey(address),
-        'confirmed',
-      );
+      const mint = await this.getMintAccount(address);
 
       return {
         mintAuthority: mint.mintAuthority?.toBase58() ?? null,
@@ -87,7 +90,7 @@ export class SolanaService {
         const parsedAccount = parsedAccounts.value[index];
         const parsedData = parsedAccount?.data as ParsedAccountData | undefined;
         const owner =
-          parsedData?.program === 'spl-token'
+          parsedData?.program && TOKEN_ACCOUNT_PROGRAMS.has(parsedData.program)
             ? (
                 parsedData.parsed.info as ParsedTokenAccountInfo | undefined
               )?.owner
@@ -199,5 +202,29 @@ export class SolanaService {
       Sentry.captureException(error);
       return null;
     }
+  }
+
+  private async getMintAccount(address: string) {
+    const mintPublicKey = new PublicKey(address);
+
+    try {
+      return await getMint(
+        this.connection,
+        mintPublicKey,
+        'confirmed',
+        TOKEN_PROGRAM_ID,
+      );
+    } catch (error) {
+      if (!(error instanceof TokenInvalidAccountOwnerError)) {
+        throw error;
+      }
+    }
+
+    return getMint(
+      this.connection,
+      mintPublicKey,
+      'confirmed',
+      TOKEN_2022_PROGRAM_ID,
+    );
   }
 }
