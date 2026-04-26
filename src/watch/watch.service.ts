@@ -3,6 +3,7 @@ import { Cron } from '@nestjs/schedule';
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { FormatterService } from '../formatter/formatter.service';
+import { DEFAULT_LANGUAGE, isSupportedLanguage } from '../i18n/language';
 import { ScannerRpcError, UnknownTokenError } from '../scanner/scanner.errors';
 import { ScannerService } from '../scanner/scanner.service';
 import { TelegramBotService } from '../telegram/telegram-bot.service';
@@ -10,6 +11,10 @@ import { TelegramBotService } from '../telegram/telegram-bot.service';
 export const WATCH_LIMIT = 5;
 
 export type AddWatchResult = 'created' | 'exists' | 'limit_reached';
+
+function getWatchLocale(language: string | null | undefined) {
+  return language && isSupportedLanguage(language) ? language : DEFAULT_LANGUAGE;
+}
 
 @Injectable()
 export class WatchService {
@@ -117,10 +122,8 @@ export class WatchService {
               watchedToken.mintAddress,
               watchedToken.lastScore,
               result.score,
+              getWatchLocale(watchedToken.user.language),
             ),
-            {
-              parse_mode: 'HTML',
-            },
           );
         }
 
@@ -179,10 +182,8 @@ export class WatchService {
         watchedToken.user.telegramId.toString(),
         this.formatterService.formatWatchMonitoringIssueMessage(
           watchedToken.mintAddress,
+          getWatchLocale(watchedToken.user.language),
         ),
-        {
-          parse_mode: 'HTML',
-        },
       );
     }
 

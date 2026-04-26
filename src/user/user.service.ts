@@ -1,6 +1,11 @@
 import { Injectable } from '@nestjs/common';
 import { Prisma, User } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
+import {
+  type Language,
+  getDefaultLanguageFromTelegramCode,
+  isSupportedLanguage,
+} from '../i18n/language';
 
 function isSameUtcDay(left: Date, right: Date): boolean {
   return (
@@ -14,7 +19,11 @@ function isSameUtcDay(left: Date, right: Date): boolean {
 export class UserService {
   constructor(private readonly prisma: PrismaService) {}
 
-  async findOrCreate(telegramId: bigint, username?: string): Promise<User> {
+  async findOrCreate(
+    telegramId: bigint,
+    username?: string,
+    telegramLanguageCode?: string,
+  ): Promise<User> {
     const existingUser = await this.prisma.user.findUnique({
       where: {
         telegramId,
@@ -40,8 +49,26 @@ export class UserService {
       data: {
         telegramId,
         username,
+        language: getDefaultLanguageFromTelegramCode(telegramLanguageCode),
       },
     });
+  }
+
+  async setLanguage(userId: number, language: Language): Promise<User> {
+    return this.prisma.user.update({
+      where: {
+        id: userId,
+      },
+      data: {
+        language,
+      },
+    });
+  }
+
+  getLanguage(user: { language: string | null | undefined }): Language {
+    return user.language && isSupportedLanguage(user.language)
+      ? user.language
+      : getDefaultLanguageFromTelegramCode();
   }
 
   async canScan(userId: number): Promise<boolean> {

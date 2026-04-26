@@ -14,6 +14,7 @@ import {
   TrendingToken,
 } from '../dexscreener/dexscreener.service';
 import { FormatterService } from '../formatter/formatter.service';
+import { TranslationService } from '../translation/translation.service';
 import { ScanService } from '../scan/scan.service';
 import { ScannerRpcError, UnknownTokenError } from '../scanner/scanner.errors';
 import { ScannerService } from '../scanner/scanner.service';
@@ -23,8 +24,15 @@ import { UserService } from '../user/user.service';
 import { WatchService, WATCH_LIMIT } from '../watch/watch.service';
 import { CacheService } from '../cache/cache.service';
 import { AdminService } from '../admin/admin.service';
+import {
+  DEFAULT_LANGUAGE,
+  type Language,
+  getDefaultLanguageFromTelegramCode,
+  isSupportedLanguage,
+} from '../i18n/language';
 
-const PRO_PLAN_PAYLOAD = 'sentinel-pro';
+const PRO_PLAN_PAYLOAD = 'scanara-pro';
+const LEGACY_PRO_PLAN_PAYLOAD = 'sentinel-pro';
 const PRO_SUBSCRIPTION_PERIOD_SECONDS = 2_592_000;
 const LOADING_STEP_DELAY_MS = 600;
 const EXAMPLE_MINT_ADDRESS = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
@@ -94,6 +102,10 @@ function extractCallbackValue(
   return data.slice(prefix.length);
 }
 
+function isProPlanPayload(payload: string | undefined): boolean {
+  return payload === PRO_PLAN_PAYLOAD || payload === LEGACY_PRO_PLAN_PAYLOAD;
+}
+
 @Injectable()
 export class BotService implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(BotService.name);
@@ -110,6 +122,7 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
     private readonly watchService: WatchService,
     private readonly cacheService: CacheService,
     private readonly adminService: AdminService,
+    private readonly translationService: TranslationService,
   ) {
     this.registerHandlers();
     this.registerErrorHandler();
@@ -119,8 +132,59 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
     return this.telegramBotService.bot;
   }
 
+  private async findOrCreateUserFromContext(ctx: Context) {
+    if (!ctx.from) {
+      return null;
+    }
+
+    return this.userService.findOrCreate(
+      BigInt(ctx.from.id),
+      ctx.from.username,
+      ctx.from.language_code,
+    );
+  }
+
+  private async getLocaleFromContext(ctx: Context): Promise<Language> {
+    if (!ctx.from) {
+      return DEFAULT_LANGUAGE;
+    }
+
+    const existingUser = await this.prisma.user.findUnique({
+      where: {
+        telegramId: BigInt(ctx.from.id),
+      },
+      select: {
+        language: true,
+      },
+    });
+
+    if (existingUser?.language && isSupportedLanguage(existingUser.language)) {
+      return existingUser.language;
+    }
+
+    return getDefaultLanguageFromTelegramCode(ctx.from.language_code);
+  }
+
+  private getLocaleFromUser(user: {
+    language: string | null | undefined;
+  }): Language {
+    return this.userService.getLanguage(user);
+  }
+
   private async sleep(ms: number): Promise<void> {
     return new Promise((resolve) => setTimeout(resolve, ms));
+  }
+
+  private async localizeText(
+    locale: Language,
+    englishText: string,
+    fallbackText = englishText,
+  ): Promise<string> {
+    return this.translationService.translateTelegramText(
+      englishText,
+      locale,
+      fallbackText,
+    );
   }
 
   private async checkRateLimit(ctx: Context): Promise<boolean> {
@@ -132,14 +196,10 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
     const count = this.cacheService.getRateLimit(key);
 
     if (count >= 5) {
+      const locale = await this.getLocaleFromContext(ctx);
       await this.replyInChat(
         ctx,
-        [
-          '🛑 <b>Slow Down</b>',
-          this.formatterService.divider(),
-          'Max 5 requests per minute.',
-          '<i>Try again in a moment.</i>',
-        ].join('\n'),
+        this.formatterService.formatSlowDownMessage(locale),
       );
       return false;
     }
@@ -169,12 +229,16 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
         description: '⭐ Go Premium',
       },
       {
+        command: 'settings',
+        description: '⚙️ Settings',
+      },
+      {
         command: 'help',
         description: '❓ Help',
       },
     ]);
 
-    this.logger.log('✅ All systems operational — Sentinel is live');
+    this.logger.log('✅ All systems operational — Scanara is live');
 
     void this.bot
       .start({
@@ -208,16 +272,23 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
           return;
         }
 
-        const user = await this.userService.findOrCreate(
-          BigInt(ctx.from!.id),
-          ctx.from!.username,
-        );
+        const user = await this.findOrCreateUserFromContext(ctx);
 
-        await this.sendHtmlMessage(
+        if (!user) {
+          return;
+        }
+
+        const locale = this.getLocaleFromUser(user);
+
+        await this.sendTextMessage(
           chatId,
-          this.formatterService.formatStartMessage(),
+          await this.localizeText(
+            locale,
+            this.formatterService.formatStartMessage('en'),
+            this.formatterService.formatStartMessage(locale),
+          ),
           {
-            reply_markup: this.buildStartKeyboard(),
+            reply_markup: this.buildStartKeyboard(locale),
           },
         );
 
@@ -225,12 +296,22 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
         const isNewUser = user.createdAt > new Date(Date.now() - 60000); // Created within last minute
         if (isNewUser) {
           await this.sleep(2000); // 2 seconds delay
-          await this.sendHtmlMessage(
+          await this.sendTextMessage(
             chatId,
-            this.formatterService.formatQuickTipMessage(EXAMPLE_MINT_ADDRESS),
+            await this.localizeText(
+              locale,
+              this.formatterService.formatQuickTipMessage(
+                EXAMPLE_MINT_ADDRESS,
+                'en',
+              ),
+              this.formatterService.formatQuickTipMessage(
+                EXAMPLE_MINT_ADDRESS,
+                locale,
+              ),
+            ),
             {
               reply_markup: new InlineKeyboard().text(
-                '🔍 Scan USDC as example',
+                this.formatterService.formatExampleScanButton(locale),
                 `scan:${EXAMPLE_MINT_ADDRESS}`,
               ),
             },
@@ -252,9 +333,15 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
           return;
         }
 
-        await this.sendHtmlMessage(
+        const locale = await this.getLocaleFromContext(ctx);
+
+        await this.sendTextMessage(
           chatId,
-          this.formatterService.formatHelpMessage(),
+          await this.localizeText(
+            locale,
+            this.formatterService.formatHelpMessage('en'),
+            this.formatterService.formatHelpMessage(locale),
+          ),
         );
       } catch (error) {
         Sentry.captureException(error);
@@ -290,11 +377,13 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
         const mintAddress = extractCommandArgument(ctx.message?.text);
 
         if (!mintAddress) {
+          const locale = await this.getLocaleFromContext(ctx);
           await this.replyInChat(
             ctx,
             this.formatterService.formatUsageMessage(
               '/unwatch',
               EXAMPLE_MINT_ADDRESS,
+              locale,
             ),
           );
           return;
@@ -325,7 +414,8 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
           return;
         }
 
-        await this.sendPremiumMessage(chatId);
+        const locale = await this.getLocaleFromContext(ctx);
+        await this.sendPremiumMessage(chatId, locale);
       } catch (error) {
         Sentry.captureException(error);
         throw error;
@@ -340,7 +430,8 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
           return;
         }
 
-        await this.sendTrendingTokens(chatId);
+        const locale = await this.getLocaleFromContext(ctx);
+        await this.sendTrendingTokens(chatId, locale);
       } catch (error) {
         Sentry.captureException(error);
         throw error;
@@ -354,11 +445,13 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
         const mintAddress = extractCommandArgument(ctx.message?.text);
 
         if (!mintAddress) {
+          const locale = await this.getLocaleFromContext(ctx);
           await this.replyInChat(
             ctx,
             this.formatterService.formatUsageMessage(
               '/scan',
               EXAMPLE_MINT_ADDRESS,
+              locale,
             ),
           );
           return;
@@ -378,11 +471,13 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
         const mintAddress = extractCommandArgument(ctx.message?.text);
 
         if (!mintAddress) {
+          const locale = await this.getLocaleFromContext(ctx);
           await this.replyInChat(
             ctx,
             this.formatterService.formatUsageMessage(
               '/watch',
               EXAMPLE_MINT_ADDRESS,
+              locale,
             ),
           );
           return;
@@ -395,11 +490,26 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
       }
     });
 
+    this.bot.command('settings', async (ctx) => {
+      try {
+        if (!(await this.checkRateLimit(ctx))) return;
+        await this.sendSettingsFromContext(ctx);
+      } catch (error) {
+        Sentry.captureException(error);
+        throw error;
+      }
+    });
+
     this.bot.callbackQuery('scan_prompt', async (ctx) => {
       await ctx.answerCallbackQuery();
+      const locale = await this.getLocaleFromContext(ctx);
       await this.replyInChat(
         ctx,
-        this.formatterService.formatUsageMessage('/scan', EXAMPLE_MINT_ADDRESS),
+        this.formatterService.formatUsageMessage(
+          '/scan',
+          EXAMPLE_MINT_ADDRESS,
+          locale,
+        ),
       );
     });
 
@@ -415,12 +525,59 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
 
     this.bot.callbackQuery('how_to_read', async (ctx) => {
       await ctx.answerCallbackQuery();
-      await this.replyInChat(ctx, this.formatterService.formatHelpMessage());
+      const locale = await this.getLocaleFromContext(ctx);
+      await this.replyInChat(
+        ctx,
+        await this.localizeText(
+          locale,
+          this.formatterService.formatHelpMessage('en'),
+          this.formatterService.formatHelpMessage(locale),
+        ),
+      );
+    });
+
+    this.bot.callbackQuery('open_settings', async (ctx) => {
+      await ctx.answerCallbackQuery();
+      await this.sendSettingsFromContext(ctx);
+    });
+
+    this.bot.callbackQuery('back_home', async (ctx) => {
+      await ctx.answerCallbackQuery();
+      await this.sendHomeFromContext(ctx);
     });
 
     this.bot.callbackQuery('buy_pro', async (ctx) => {
       await ctx.answerCallbackQuery();
       await this.sendProInvoice(ctx);
+    });
+
+    this.bot.callbackQuery(/^set_language:/, async (ctx) => {
+      await ctx.answerCallbackQuery();
+
+      const language = extractCallbackValue(
+        ctx.callbackQuery.data,
+        'set_language:',
+      );
+
+      if (!language || !isSupportedLanguage(language) || !ctx.from) {
+        return;
+      }
+
+      const user = await this.findOrCreateUserFromContext(ctx);
+
+      if (!user) {
+        return;
+      }
+
+      const updatedUser = await this.userService.setLanguage(user.id, language);
+      const locale = this.getLocaleFromUser(updatedUser);
+
+      await this.replyInChat(
+        ctx,
+        this.formatterService.formatLanguageChangedMessage(locale),
+      );
+
+      await this.sendSettingsMessage(ctx.chat?.id, locale);
     });
 
     this.bot.callbackQuery(/^history:/, async (ctx) => {
@@ -460,8 +617,9 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
     });
 
     this.bot.callbackQuery(/^scan:/, async (ctx) => {
+      const locale = await this.getLocaleFromContext(ctx);
       await ctx.answerCallbackQuery({
-        text: 'Starting scan...',
+        text: this.formatterService.formatStartingScanNotice(locale),
       });
 
       const mintAddress = extractCallbackValue(ctx.callbackQuery.data, 'scan:');
@@ -474,8 +632,9 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
     });
 
     this.bot.callbackQuery(/^trending_scan:/, async (ctx) => {
+      const locale = await this.getLocaleFromContext(ctx);
       await ctx.answerCallbackQuery({
-        text: 'Starting scan...',
+        text: this.formatterService.formatStartingScanNotice(locale),
       });
 
       const mintAddress = extractCallbackValue(
@@ -493,8 +652,9 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
     });
 
     this.bot.callbackQuery(/^re_scan:/, async (ctx) => {
+      const locale = await this.getLocaleFromContext(ctx);
       await ctx.answerCallbackQuery({
-        text: 'Re-scanning token...',
+        text: this.formatterService.formatRescanNotice(locale),
       });
 
       const mintAddress = extractCallbackValue(
@@ -545,7 +705,7 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
     this.bot.on('pre_checkout_query', async (ctx) => {
       const payload = ctx.preCheckoutQuery?.invoice_payload;
 
-      if (payload !== PRO_PLAN_PAYLOAD) {
+      if (!isProPlanPayload(payload)) {
         await ctx.answerPreCheckoutQuery(false, 'Unknown purchase request.');
         return;
       }
@@ -556,11 +716,7 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
     this.bot.on('message:successful_payment', async (ctx) => {
       const payment = ctx.message?.successful_payment;
 
-      if (
-        !payment ||
-        payment.invoice_payload !== PRO_PLAN_PAYLOAD ||
-        !ctx.from
-      ) {
+      if (!payment || !isProPlanPayload(payment.invoice_payload) || !ctx.from) {
         return;
       }
 
@@ -571,19 +727,26 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
       }
 
       try {
-        const user = await this.userService.findOrCreate(
-          BigInt(ctx.from.id),
-          ctx.from.username,
-        );
+        const user = await this.findOrCreateUserFromContext(ctx);
+
+        if (!user) {
+          return;
+        }
+
+        const locale = this.getLocaleFromUser(user);
         const premiumUntil = payment.subscription_expiration_date
           ? new Date(payment.subscription_expiration_date * 1000)
-          : null;
+          : new Date(Date.now() + PRO_SUBSCRIPTION_PERIOD_SECONDS * 1000);
 
         await this.userService.activatePremium(user.id, premiumUntil);
 
-        await this.sendHtmlMessage(
+        await this.sendTextMessage(
           chatId,
-          this.formatterService.formatPaymentSuccessMessage(),
+          await this.localizeText(
+            locale,
+            this.formatterService.formatPaymentSuccessMessage('en'),
+            this.formatterService.formatPaymentSuccessMessage(locale),
+          ),
         );
       } catch (error) {
         this.logger.error(
@@ -591,9 +754,15 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
           error instanceof Error ? error.stack : undefined,
         );
 
-        await this.sendHtmlMessage(
+        const locale = await this.getLocaleFromContext(ctx);
+
+        await this.sendTextMessage(
           chatId,
-          this.formatterService.formatPaymentActivationFailedMessage(),
+          await this.localizeText(
+            locale,
+            this.formatterService.formatPaymentActivationFailedMessage('en'),
+            this.formatterService.formatPaymentActivationFailedMessage(locale),
+          ),
         );
       }
     });
@@ -651,35 +820,39 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
       return;
     }
 
+    const locale = await this.getLocaleFromContext(ctx);
+
     if (!isValidSolanaPublicKey(mintAddress)) {
-      await this.sendHtmlMessage(
+      await this.sendTextMessage(
         chatId,
-        this.formatterService.formatInvalidAddressMessage(),
+        this.formatterService.formatInvalidAddressMessage(locale),
       );
       return;
     }
 
     if (!ctx.from) {
-      await this.sendHtmlMessage(
+      await this.sendTextMessage(
         chatId,
-        this.formatterService.formatAccountRequiredMessage('scan'),
+        this.formatterService.formatAccountRequiredMessage('scan', locale),
       );
       return;
     }
 
-    const user = await this.userService.findOrCreate(
-      BigInt(ctx.from.id),
-      ctx.from.username,
-    );
+    const user = await this.findOrCreateUserFromContext(ctx);
+
+    if (!user) {
+      return;
+    }
+
     const canScan = await this.userService.canScan(user.id);
 
     if (!canScan) {
-      await this.sendHtmlMessage(
+      await this.sendTextMessage(
         chatId,
-        this.formatterService.formatRateLimitMessage(),
+        this.formatterService.formatRateLimitMessage(locale),
         {
           reply_markup: new InlineKeyboard().text(
-            '⭐ Go Pro — $9/month',
+            this.formatterService.formatPremiumButton(locale),
             'upgrade',
           ),
         },
@@ -692,6 +865,7 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
         chatId,
         mintAddress,
         options.bypassCache ?? false,
+        locale,
       );
 
       await Promise.all([
@@ -699,11 +873,15 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
         this.scanService.create(user.id, mintAddress, result),
       ]);
 
-      await this.sendHtmlMessage(
+      await this.sendTextMessage(
         chatId,
-        this.formatterService.formatResult(result),
+        await this.localizeText(
+          locale,
+          this.formatterService.formatResult(result, 'en'),
+          this.formatterService.formatResult(result, locale),
+        ),
         {
-          reply_markup: this.buildScanResultKeyboard(mintAddress),
+          reply_markup: this.buildScanResultKeyboard(mintAddress, locale),
         },
       );
     } catch (error) {
@@ -712,9 +890,9 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
         error instanceof Error ? error.stack : undefined,
       );
 
-      await this.sendHtmlMessage(
+      await this.sendTextMessage(
         chatId,
-        this.getScanErrorMessage(error, options),
+        this.getScanErrorMessage(error, locale, options),
       );
     }
   }
@@ -723,10 +901,11 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
     chatId: number | string,
     mintAddress: string,
     bypassCache: boolean,
+    locale: Language,
   ): Promise<ScanResult> {
-    const loadingMessage = await this.sendHtmlMessage(
+    const loadingMessage = await this.sendTextMessage(
       chatId,
-      this.formatterService.formatScanProgressMessage(mintAddress, 1),
+      this.formatterService.formatScanProgressMessage(mintAddress, 1, locale),
     );
     let lastUpdateAt = Date.now();
 
@@ -737,7 +916,7 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
         await sleep(LOADING_STEP_DELAY_MS - elapsedMs);
       }
 
-      await this.editHtmlMessage(chatId, loadingMessage.message_id, text);
+      await this.editTextMessage(chatId, loadingMessage.message_id, text);
       lastUpdateAt = Date.now();
     };
 
@@ -747,19 +926,31 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
         onProgress: async (stage: ScanProgressStage) => {
           if (stage === 'fetched_on_chain_data') {
             await advanceLoadingMessage(
-              this.formatterService.formatScanProgressMessage(mintAddress, 2),
+              this.formatterService.formatScanProgressMessage(
+                mintAddress,
+                2,
+                locale,
+              ),
             );
           }
 
           if (stage === 'analyzed_holders') {
             await advanceLoadingMessage(
-              this.formatterService.formatScanProgressMessage(mintAddress, 3),
+              this.formatterService.formatScanProgressMessage(
+                mintAddress,
+                3,
+                locale,
+              ),
             );
           }
 
           if (stage === 'calculating_score') {
             await advanceLoadingMessage(
-              this.formatterService.formatScanProgressMessage(mintAddress, 4),
+              this.formatterService.formatScanProgressMessage(
+                mintAddress,
+                4,
+                locale,
+              ),
             );
           }
         },
@@ -787,34 +978,41 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
       return;
     }
 
+    const locale = await this.getLocaleFromContext(ctx);
+
     if (!isValidSolanaPublicKey(mintAddress)) {
-      await this.sendHtmlMessage(
+      await this.sendTextMessage(
         chatId,
-        this.formatterService.formatInvalidAddressMessage(),
+        this.formatterService.formatInvalidAddressMessage(locale),
       );
       return;
     }
 
     if (!ctx.from) {
-      await this.sendHtmlMessage(
+      await this.sendTextMessage(
         chatId,
-        this.formatterService.formatAccountRequiredMessage('request'),
+        this.formatterService.formatAccountRequiredMessage('request', locale),
       );
       return;
     }
 
-    const user = await this.userService.findOrCreate(
-      BigInt(ctx.from.id),
-      ctx.from.username,
-    );
+    const user = await this.findOrCreateUserFromContext(ctx);
+
+    if (!user) {
+      return;
+    }
+
     const hasPremium = await this.userService.canUsePremium(user.id);
 
     if (!hasPremium) {
-      await this.sendHtmlMessage(
+      await this.sendTextMessage(
         chatId,
-        this.formatterService.formatWatchProOnlyMessage(),
+        this.formatterService.formatWatchProOnlyMessage(locale),
         {
-          reply_markup: new InlineKeyboard().text('⭐ Go Pro', 'upgrade'),
+          reply_markup: new InlineKeyboard().text(
+            this.formatterService.formatPremiumButton(locale),
+            'upgrade',
+          ),
         },
       );
       return;
@@ -831,26 +1029,30 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
       );
 
       if (addResult === 'exists') {
-        await this.sendHtmlMessage(
+        await this.sendTextMessage(
           chatId,
-          this.formatterService.formatWatchAlreadyExistsMessage(mintAddress),
+          this.formatterService.formatWatchAlreadyExistsMessage(
+            mintAddress,
+            locale,
+          ),
         );
         return;
       }
 
       if (addResult === 'limit_reached') {
-        await this.sendHtmlMessage(
+        await this.sendTextMessage(
           chatId,
-          this.formatterService.formatWatchLimitMessage(WATCH_LIMIT),
+          this.formatterService.formatWatchLimitMessage(WATCH_LIMIT, locale),
         );
         return;
       }
 
-      await this.sendHtmlMessage(
+      await this.sendTextMessage(
         chatId,
         this.formatterService.formatWatchCreatedMessage(
           mintAddress,
           result.score,
+          locale,
         ),
       );
     } catch (error) {
@@ -859,7 +1061,10 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
         error instanceof Error ? error.stack : undefined,
       );
 
-      await this.sendHtmlMessage(chatId, this.getScanErrorMessage(error));
+      await this.sendTextMessage(
+        chatId,
+        this.getScanErrorMessage(error, locale),
+      );
     }
   }
 
@@ -871,39 +1076,55 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
     }
 
     if (!ctx.from) {
-      await this.sendHtmlMessage(
+      const locale = await this.getLocaleFromContext(ctx);
+      await this.sendTextMessage(
         chatId,
-        this.formatterService.formatAccountRequiredMessage('request'),
+        this.formatterService.formatAccountRequiredMessage('request', locale),
       );
       return;
     }
 
-    const user = await this.userService.findOrCreate(
-      BigInt(ctx.from.id),
-      ctx.from.username,
-    );
+    const user = await this.findOrCreateUserFromContext(ctx);
+
+    if (!user) {
+      return;
+    }
+
+    const locale = this.getLocaleFromUser(user);
 
     const scans = await this.userService.getScanHistory(user.id, 1, 10);
 
     if (scans.length === 0) {
-      await this.sendHtmlMessage(
+      await this.sendTextMessage(
         chatId,
-        this.formatterService.formatNoHistoryMessage(),
+        this.formatterService.formatNoHistoryMessage(locale),
       );
       return;
     }
 
     const keyboard = scans.map((scan: any) => [
-      InlineKeyboard.text('🔍 Re-scan', `re_scan:${scan.mintAddress}`),
+      InlineKeyboard.text(
+        this.formatterService.formatRescanButton(locale),
+        `re_scan:${scan.mintAddress}`,
+      ),
     ]);
 
     if (scans.length === 10) {
-      keyboard.push([InlineKeyboard.text('▶ Next', 'history:2')]);
+      keyboard.push([
+        InlineKeyboard.text(
+          this.formatterService.formatNextButton(locale),
+          'history:2',
+        ),
+      ]);
     }
 
-    await this.sendHtmlMessage(
+    await this.sendTextMessage(
       chatId,
-      this.formatterService.formatHistoryMessage(scans, 1),
+      await this.localizeText(
+        locale,
+        this.formatterService.formatHistoryMessage(scans, 1, 'en'),
+        this.formatterService.formatHistoryMessage(scans, 1, locale),
+      ),
       {
         reply_markup: InlineKeyboard.from(keyboard),
       },
@@ -918,46 +1139,67 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
     }
 
     if (!ctx.from) {
-      await this.sendHtmlMessage(
+      const locale = await this.getLocaleFromContext(ctx);
+      await this.sendTextMessage(
         chatId,
-        this.formatterService.formatAccountRequiredMessage('request'),
+        this.formatterService.formatAccountRequiredMessage('request', locale),
       );
       return;
     }
 
-    const user = await this.userService.findOrCreate(
-      BigInt(ctx.from.id),
-      ctx.from.username,
-    );
+    const user = await this.findOrCreateUserFromContext(ctx);
+
+    if (!user) {
+      return;
+    }
+
+    const locale = this.getLocaleFromUser(user);
 
     const scans = await this.userService.getScanHistory(user.id, page, 10);
 
     if (scans.length === 0) {
-      await this.sendHtmlMessage(
+      await this.sendTextMessage(
         chatId,
-        this.formatterService.formatNoMoreHistoryMessage(),
+        this.formatterService.formatNoMoreHistoryMessage(locale),
       );
       return;
     }
 
     const keyboard = scans.map((scan: any) => [
-      InlineKeyboard.text('🔍 Re-scan', `re_scan:${scan.mintAddress}`),
+      InlineKeyboard.text(
+        this.formatterService.formatRescanButton(locale),
+        `re_scan:${scan.mintAddress}`,
+      ),
     ]);
 
     const navButtons: any[] = [];
     if (page > 1) {
-      navButtons.push(InlineKeyboard.text('◀ Prev', `history:${page - 1}`));
+      navButtons.push(
+        InlineKeyboard.text(
+          this.formatterService.formatPrevButton(locale),
+          `history:${page - 1}`,
+        ),
+      );
     }
     if (scans.length === 10) {
-      navButtons.push(InlineKeyboard.text('Next ▶', `history:${page + 1}`));
+      navButtons.push(
+        InlineKeyboard.text(
+          this.formatterService.formatNextButton(locale),
+          `history:${page + 1}`,
+        ),
+      );
     }
     if (navButtons.length > 0) {
       keyboard.push(navButtons);
     }
 
-    await this.sendHtmlMessage(
+    await this.sendTextMessage(
       chatId,
-      this.formatterService.formatHistoryMessage(scans, page),
+      await this.localizeText(
+        locale,
+        this.formatterService.formatHistoryMessage(scans, page, 'en'),
+        this.formatterService.formatHistoryMessage(scans, page, locale),
+      ),
       {
         reply_markup: InlineKeyboard.from(keyboard),
       },
@@ -972,17 +1214,21 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
     }
 
     if (!ctx.from) {
-      await this.sendHtmlMessage(
+      const locale = await this.getLocaleFromContext(ctx);
+      await this.sendTextMessage(
         chatId,
-        this.formatterService.formatAccountRequiredMessage('request'),
+        this.formatterService.formatAccountRequiredMessage('request', locale),
       );
       return;
     }
 
-    const user = await this.userService.findOrCreate(
-      BigInt(ctx.from.id),
-      ctx.from.username,
-    );
+    const user = await this.findOrCreateUserFromContext(ctx);
+
+    if (!user) {
+      return;
+    }
+
+    const locale = this.getLocaleFromUser(user);
 
     const watchedTokens = await this.prisma.watchedToken.findMany({
       where: {
@@ -991,23 +1237,27 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
     });
 
     if (watchedTokens.length === 0) {
-      await this.sendHtmlMessage(
+      await this.sendTextMessage(
         chatId,
-        this.formatterService.formatNoWatchedTokensMessage(),
+        this.formatterService.formatNoWatchedTokensMessage(locale),
       );
       return;
     }
 
     const keyboard = watchedTokens.map((token) => [
       InlineKeyboard.text(
-        `❌ Unwatch ${token.mintAddress.slice(0, 6)}...`,
+        this.formatterService.formatUnwatchButton(token.mintAddress, locale),
         `unwatch:${token.mintAddress}`,
       ),
     ]);
 
-    await this.sendHtmlMessage(
+    await this.sendTextMessage(
       chatId,
-      this.formatterService.formatWatchedTokensMessage(watchedTokens),
+      await this.localizeText(
+        locale,
+        this.formatterService.formatWatchedTokensMessage(watchedTokens, 'en'),
+        this.formatterService.formatWatchedTokensMessage(watchedTokens, locale),
+      ),
       {
         reply_markup: InlineKeyboard.from(keyboard),
       },
@@ -1024,32 +1274,39 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
       return;
     }
 
+    const locale = await this.getLocaleFromContext(ctx);
+
     if (!isValidSolanaPublicKey(mintAddress)) {
-      await this.sendHtmlMessage(
+      await this.sendTextMessage(
         chatId,
-        this.formatterService.formatInvalidAddressMessage(),
+        this.formatterService.formatInvalidAddressMessage(locale),
       );
       return;
     }
 
     if (!ctx.from) {
-      await this.sendHtmlMessage(
+      await this.sendTextMessage(
         chatId,
-        this.formatterService.formatAccountRequiredMessage('request'),
+        this.formatterService.formatAccountRequiredMessage('request', locale),
       );
       return;
     }
 
-    const user = await this.userService.findOrCreate(
-      BigInt(ctx.from.id),
-      ctx.from.username,
-    );
+    const user = await this.findOrCreateUserFromContext(ctx);
+
+    if (!user) {
+      return;
+    }
 
     const removed = await this.watchService.removeWatch(user.id, mintAddress);
 
-    await this.sendHtmlMessage(
+    await this.sendTextMessage(
       chatId,
-      this.formatterService.formatUnwatchResultMessage(mintAddress, removed),
+      this.formatterService.formatUnwatchResultMessage(
+        mintAddress,
+        removed,
+        locale,
+      ),
     );
   }
 
@@ -1067,18 +1324,24 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
     const adminIds =
       process.env.ADMIN_IDS?.split(',').map((id) => id.trim()) || [];
     if (!adminIds.includes(ctx.from.id.toString())) {
-      await this.sendHtmlMessage(
+      const locale = await this.getLocaleFromContext(ctx);
+      await this.sendTextMessage(
         chatId,
-        this.formatterService.formatAccessDeniedMessage(),
+        this.formatterService.formatAccessDeniedMessage(locale),
       );
       return;
     }
 
     const stats = await this.adminService.getStats();
+    const locale = await this.getLocaleFromContext(ctx);
 
-    await this.sendHtmlMessage(
+    await this.sendTextMessage(
       chatId,
-      this.formatterService.formatStatsMessage(stats),
+      await this.localizeText(
+        locale,
+        this.formatterService.formatStatsMessage(stats, 'en'),
+        this.formatterService.formatStatsMessage(stats, locale),
+      ),
     );
   }
 
@@ -1097,10 +1360,13 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
       return;
     }
 
-    const user = await this.userService.findOrCreate(
-      BigInt(ctx.from.id),
-      ctx.from.username,
-    );
+    const user = await this.findOrCreateUserFromContext(ctx);
+
+    if (!user) {
+      return;
+    }
+
+    const locale = this.getLocaleFromUser(user);
 
     const lastScan = await this.prisma.scan.findFirst({
       where: {
@@ -1113,9 +1379,9 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
     });
 
     if (!lastScan) {
-      await this.sendHtmlMessage(
+      await this.sendTextMessage(
         chatId,
-        this.formatterService.formatNoShareResultMessage(),
+        this.formatterService.formatNoShareResultMessage(locale),
       );
       return;
     }
@@ -1124,10 +1390,11 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
     const shareMessage = this.formatterService.formatShareText(
       mintAddress,
       result.score,
+      locale,
     );
 
     await ctx.answerCallbackQuery({
-      text: 'Share link copied!',
+      text: this.formatterService.formatShareReadyMessage(locale),
       url: `https://t.me/share/url?url=${encodeURIComponent(shareMessage)}`,
     });
   }
@@ -1142,12 +1409,18 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
       return;
     }
 
+    const locale = await this.getLocaleFromContext(ctx);
+
     try {
       const result = await this.scannerService.analyzeToken(mintAddress);
 
-      await this.sendHtmlMessage(
+      await this.sendTextMessage(
         chatId,
-        this.formatterService.formatTopHoldersDetail(result),
+        await this.localizeText(
+          locale,
+          this.formatterService.formatTopHoldersDetail(result, 'en'),
+          this.formatterService.formatTopHoldersDetail(result, locale),
+        ),
       );
     } catch (error) {
       this.logger.error(
@@ -1155,27 +1428,37 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
         error instanceof Error ? error.stack : undefined,
       );
 
-      await this.sendHtmlMessage(chatId, this.getScanErrorMessage(error));
+      await this.sendTextMessage(
+        chatId,
+        this.getScanErrorMessage(error, locale),
+      );
     }
   }
 
-  private async sendTrendingTokens(chatId: number | string): Promise<void> {
+  private async sendTrendingTokens(
+    chatId: number | string,
+    locale: Language,
+  ): Promise<void> {
     try {
       const tokens = await this.getValidatedTrendingTokens(5);
 
       if (tokens.length === 0) {
-        await this.sendHtmlMessage(
+        await this.sendTextMessage(
           chatId,
-          this.formatterService.formatNoTrendingTokensMessage(),
+          this.formatterService.formatNoTrendingTokensMessage(locale),
         );
         return;
       }
 
-      await this.sendHtmlMessage(
+      await this.sendTextMessage(
         chatId,
-        this.formatterService.formatTrendingMessage(tokens),
+        await this.localizeText(
+          locale,
+          this.formatterService.formatTrendingMessage(tokens, 'en'),
+          this.formatterService.formatTrendingMessage(tokens, locale),
+        ),
         {
-          reply_markup: this.buildTrendingKeyboard(tokens),
+          reply_markup: this.buildTrendingKeyboard(tokens, locale),
         },
       );
     } catch (error) {
@@ -1184,9 +1467,9 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
         error instanceof Error ? error.stack : undefined,
       );
 
-      await this.sendHtmlMessage(
+      await this.sendTextMessage(
         chatId,
-        this.formatterService.formatTrendingUnavailableMessage(),
+        this.formatterService.formatTrendingUnavailableMessage(locale),
       );
     }
   }
@@ -1198,16 +1481,24 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
       return;
     }
 
-    await this.sendPremiumMessage(chatId);
+    const locale = await this.getLocaleFromContext(ctx);
+    await this.sendPremiumMessage(chatId, locale);
   }
 
-  private async sendPremiumMessage(chatId: number | string): Promise<void> {
-    await this.sendHtmlMessage(
+  private async sendPremiumMessage(
+    chatId: number | string,
+    locale: Language,
+  ): Promise<void> {
+    await this.sendTextMessage(
       chatId,
-      this.formatterService.formatPremiumMessage(),
+      await this.localizeText(
+        locale,
+        this.formatterService.formatPremiumMessage('en'),
+        this.formatterService.formatPremiumMessage(locale),
+      ),
       {
         reply_markup: new InlineKeyboard().text(
-          '💳 Upgrade to Pro — 900 ⭐',
+          this.formatterService.formatUpgradeButton(locale),
           'buy_pro',
         ),
       },
@@ -1222,38 +1513,91 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
     }
 
     if (ctx.from) {
-      const user = await this.userService.findOrCreate(
-        BigInt(ctx.from.id),
-        ctx.from.username,
-      );
+      const user = await this.findOrCreateUserFromContext(ctx);
+
+      if (!user) {
+        return;
+      }
+
+      const locale = this.getLocaleFromUser(user);
 
       if (await this.userService.canUsePremium(user.id)) {
-        await this.sendHtmlMessage(
+        await this.sendTextMessage(
           chatId,
-          this.formatterService.formatProAlreadyActiveMessage(),
+          await this.localizeText(
+            locale,
+            this.formatterService.formatProAlreadyActiveMessage('en'),
+            this.formatterService.formatProAlreadyActiveMessage(locale),
+          ),
         );
         return;
       }
-    }
 
-    await this.bot.api.sendInvoice(
-      chatId,
-      'Sentinel Pro',
-      'Unlimited scans, premium alerts, and advanced analysis.',
-      PRO_PLAN_PAYLOAD,
-      'XTR',
-      [
-        {
-          label: 'Sentinel Pro',
-          amount: 900,
-        },
-      ],
-      {
-        provider_token: '',
+      const invoicePayload = {
+        title: this.formatterService.formatPaymentTitle(locale),
+        description: this.formatterService.formatPaymentDescription(locale),
+        payload: PRO_PLAN_PAYLOAD,
+        currency: 'XTR',
+        prices: [
+          {
+            label: this.formatterService.formatPaymentPriceLabel(locale),
+            amount: 900,
+          },
+        ],
         start_parameter: PRO_PLAN_PAYLOAD,
         subscription_period: PRO_SUBSCRIPTION_PERIOD_SECONDS,
-      } as never,
-    );
+      };
+
+      try {
+        await this.bot.api.raw.sendInvoice({
+          chat_id: chatId,
+          ...invoicePayload,
+        } as any);
+        return;
+      } catch (error) {
+        this.logger.warn(
+          `sendInvoice failed for Telegram Stars, falling back to invoice link: ${
+            error instanceof Error ? error.message : 'Unknown error'
+          }`,
+        );
+      }
+
+      try {
+        const invoiceLink = await this.bot.api.raw.createInvoiceLink(
+          invoicePayload as any,
+        );
+
+        await this.sendTextMessage(
+          chatId,
+          await this.localizeText(
+            locale,
+            this.formatterService.formatPaymentLinkFallbackMessage('en'),
+            this.formatterService.formatPaymentLinkFallbackMessage(locale),
+          ),
+          {
+            reply_markup: new InlineKeyboard().url(
+              this.formatterService.formatUpgradeButton(locale),
+              invoiceLink,
+            ),
+          },
+        );
+      } catch (error) {
+        this.logger.error(
+          'Telegram Stars invoice link fallback failed',
+          error instanceof Error ? error.stack : undefined,
+        );
+
+        await this.sendTextMessage(
+          chatId,
+          await this.localizeText(
+            locale,
+            this.formatterService.formatPaymentUnavailableMessage('en'),
+            this.formatterService.formatPaymentUnavailableMessage(locale),
+          ),
+        );
+      }
+      return;
+    }
   }
 
   private async sendTrendingTokensFromContext(ctx: Context): Promise<void> {
@@ -1263,7 +1607,65 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
       return;
     }
 
-    await this.sendTrendingTokens(chatId);
+    const locale = await this.getLocaleFromContext(ctx);
+    await this.sendTrendingTokens(chatId, locale);
+  }
+
+  private async sendHomeFromContext(ctx: Context): Promise<void> {
+    const chatId = ctx.chat?.id;
+
+    if (!chatId) {
+      return;
+    }
+
+    const locale = await this.getLocaleFromContext(ctx);
+    await this.sendTextMessage(
+      chatId,
+      await this.localizeText(
+        locale,
+        this.formatterService.formatStartMessage('en'),
+        this.formatterService.formatStartMessage(locale),
+      ),
+      {
+        reply_markup: this.buildStartKeyboard(locale),
+      },
+    );
+  }
+
+  private async sendSettingsFromContext(ctx: Context): Promise<void> {
+    const chatId = ctx.chat?.id;
+
+    if (!chatId) {
+      return;
+    }
+
+    const user = await this.findOrCreateUserFromContext(ctx);
+    const locale = user
+      ? this.getLocaleFromUser(user)
+      : await this.getLocaleFromContext(ctx);
+
+    await this.sendSettingsMessage(chatId, locale);
+  }
+
+  private async sendSettingsMessage(
+    chatId: number | string | undefined,
+    locale: Language,
+  ): Promise<void> {
+    if (!chatId) {
+      return;
+    }
+
+    await this.sendTextMessage(
+      chatId,
+      await this.localizeText(
+        locale,
+        this.formatterService.formatSettingsMessage(locale, 'en'),
+        this.formatterService.formatSettingsMessage(locale, locale),
+      ),
+      {
+        reply_markup: this.buildSettingsKeyboard(locale),
+      },
+    );
   }
 
   private async replyInChat(ctx: Context, text: string): Promise<void> {
@@ -1273,60 +1675,94 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
       return;
     }
 
-    await this.sendHtmlMessage(chatId, text);
+    await this.sendTextMessage(chatId, text);
   }
 
-  private async sendHtmlMessage(
+  private async sendTextMessage(
     chatId: number | string,
     text: string,
     options: Record<string, unknown> = {},
   ) {
-    return this.bot.api.sendMessage(chatId, text, {
-      parse_mode: 'HTML',
-      ...options,
-    });
+    return this.bot.api.sendMessage(chatId, text, options);
   }
 
-  private async editHtmlMessage(
+  private async editTextMessage(
     chatId: number | string,
     messageId: number,
     text: string,
     options: Record<string, unknown> = {},
   ) {
-    return this.bot.api.editMessageText(chatId, messageId, text, {
-      parse_mode: 'HTML',
-      ...options,
-    });
+    return this.bot.api.editMessageText(chatId, messageId, text, options);
   }
 
-  private buildStartKeyboard(): InlineKeyboard {
+  private buildStartKeyboard(locale: Language): InlineKeyboard {
     return new InlineKeyboard()
-      .text('🔍 Scan a Token', 'scan_prompt')
-      .text('🔥 Trending Now', 'show_trending')
+      .text(this.formatterService.formatScanButton(locale), 'scan_prompt')
+      .text(this.formatterService.formatTrendingButton(locale), 'show_trending')
       .row()
-      .text('⭐ Go Pro', 'upgrade')
-      .text('❓ How it works', 'how_to_read');
+      .text(this.formatterService.formatPremiumButton(locale), 'upgrade')
+      .text(this.formatterService.formatHelpButton(locale), 'how_to_read')
+      .row()
+      .text(this.formatterService.formatSettingsButton(locale), 'open_settings')
+      .row()
+      .text(this.formatterService.formatLanguageButton('en'), 'set_language:en')
+      .text(
+        this.formatterService.formatLanguageButton('fa'),
+        'set_language:fa',
+      );
   }
 
-  private buildScanResultKeyboard(mintAddress: string): InlineKeyboard {
+  private buildSettingsKeyboard(locale: Language): InlineKeyboard {
     return new InlineKeyboard()
-      .text('🔄 Re-scan', `re_scan:${mintAddress}`)
-      .text('📊 Top Holders Detail', `holders:${mintAddress}`)
+      .text(this.formatterService.formatLanguageButton('en'), 'set_language:en')
+      .text(this.formatterService.formatLanguageButton('fa'), 'set_language:fa')
       .row()
-      .text('📤 Share Result', `share:${mintAddress}`)
+      .text(this.formatterService.formatHelpButton(locale), 'how_to_read')
+      .text(this.formatterService.formatPremiumButton(locale), 'upgrade')
       .row()
-      .text('⭐ Upgrade to Pro', 'upgrade')
-      .text('📚 How to read this?', 'how_to_read')
+      .text(this.formatterService.formatScanButton(locale), 'scan_prompt')
+      .text(this.formatterService.formatTrendingButton(locale), 'show_trending')
       .row()
-      .text('🔗 View on Solscan', `solscan:${mintAddress}`);
+      .text(this.formatterService.formatHomeButton(locale), 'back_home');
   }
 
-  private buildTrendingKeyboard(tokens: TrendingToken[]): InlineKeyboard {
+  private buildScanResultKeyboard(
+    mintAddress: string,
+    locale: Language,
+  ): InlineKeyboard {
+    return new InlineKeyboard()
+      .text(
+        this.formatterService.formatRescanButton(locale),
+        `re_scan:${mintAddress}`,
+      )
+      .text(
+        this.formatterService.formatTopHoldersButton(locale),
+        `holders:${mintAddress}`,
+      )
+      .row()
+      .text(
+        this.formatterService.formatShareButton(locale),
+        `share:${mintAddress}`,
+      )
+      .row()
+      .text(this.formatterService.formatPremiumButton(locale), 'upgrade')
+      .text(this.formatterService.formatHowToReadButton(locale), 'how_to_read')
+      .row()
+      .text(
+        this.formatterService.formatSolscanButton(locale),
+        `solscan:${mintAddress}`,
+      );
+  }
+
+  private buildTrendingKeyboard(
+    tokens: TrendingToken[],
+    locale: Language,
+  ): InlineKeyboard {
     const keyboard = new InlineKeyboard();
 
     tokens.forEach((token, index) => {
       keyboard.text(
-        `🔍 Scan ${token.symbol}`,
+        this.formatterService.formatScanTrendingButton(token.symbol, locale),
         `trending_scan:${token.mintAddress}`,
       );
 
@@ -1407,21 +1843,24 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
 
   private getScanErrorMessage(
     error: unknown,
+    locale: Language,
     options: { fromTrending?: boolean } = {},
   ): string {
     if (error instanceof ScannerRpcError) {
-      return this.formatterService.formatRpcUnavailableMessage();
+      return this.formatterService.formatRpcUnavailableMessage(locale);
     }
 
     if (error instanceof UnknownTokenError) {
       if (options.fromTrending) {
-        return this.formatterService.formatTrendingScanUnavailableMessage();
+        return this.formatterService.formatTrendingScanUnavailableMessage(
+          locale,
+        );
       }
 
-      return this.formatterService.formatTokenNotFoundMessage();
+      return this.formatterService.formatTokenNotFoundMessage(locale);
     }
 
-    return this.formatterService.formatGenericScanFailedMessage();
+    return this.formatterService.formatGenericScanFailedMessage(locale);
   }
 
   private async safeDeleteMessage(
