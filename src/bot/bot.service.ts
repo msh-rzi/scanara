@@ -9,7 +9,10 @@ import { PublicKey } from '@solana/web3.js';
 import * as Sentry from '@sentry/nestjs';
 import { PrismaService } from '../prisma/prisma.service';
 import { SolanaService } from '../solana/solana.service';
-import { DexScreenerService, TrendingToken } from '../dexscreener/dexscreener.service';
+import {
+  DexScreenerService,
+  TrendingToken,
+} from '../dexscreener/dexscreener.service';
 import { FormatterService } from '../formatter/formatter.service';
 import { ScanService } from '../scan/scan.service';
 import { ScannerRpcError, UnknownTokenError } from '../scanner/scanner.errors';
@@ -25,6 +28,9 @@ const PRO_PLAN_PAYLOAD = 'sentinel-pro';
 const PRO_SUBSCRIPTION_PERIOD_SECONDS = 2_592_000;
 const LOADING_STEP_DELAY_MS = 600;
 const EXAMPLE_MINT_ADDRESS = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
+const TRENDING_CACHE_KEY = 'trending:solana';
+const TRENDING_CACHE_TTL_SECONDS = 600;
+const TRENDING_MINT_VALIDATION_TIMEOUT_MS = 3_000;
 
 function extractCommandArgument(messageText?: string): string | null {
   if (!messageText) {
@@ -54,7 +60,33 @@ function sleep(durationMs: number): Promise<void> {
   });
 }
 
-function extractCallbackValue(data: string | undefined, prefix: string): string | null {
+async function withTimeout<T>(
+  promise: Promise<T>,
+  timeoutMs: number,
+  timeoutMessage: string,
+): Promise<T> {
+  let timeoutHandle: NodeJS.Timeout | undefined;
+
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<T>((_, reject) => {
+        timeoutHandle = setTimeout(() => {
+          reject(new Error(timeoutMessage));
+        }, timeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timeoutHandle) {
+      clearTimeout(timeoutHandle);
+    }
+  }
+}
+
+function extractCallbackValue(
+  data: string | undefined,
+  prefix: string,
+): string | null {
   if (!data?.startsWith(prefix)) {
     return null;
   }
@@ -88,7 +120,7 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
   }
 
   private async sleep(ms: number): Promise<void> {
-    return new Promise(resolve => setTimeout(resolve, ms));
+    return new Promise((resolve) => setTimeout(resolve, ms));
   }
 
   private async checkRateLimit(ctx: Context): Promise<boolean> {
@@ -168,7 +200,7 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
   private registerHandlers() {
     this.bot.command('start', async (ctx) => {
       try {
-        if (!await this.checkRateLimit(ctx)) return;
+        if (!(await this.checkRateLimit(ctx))) return;
 
         const chatId = ctx.chat?.id;
 
@@ -181,9 +213,13 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
           ctx.from!.username,
         );
 
-        await this.sendHtmlMessage(chatId, this.formatterService.formatStartMessage(), {
-          reply_markup: this.buildStartKeyboard(),
-        });
+        await this.sendHtmlMessage(
+          chatId,
+          this.formatterService.formatStartMessage(),
+          {
+            reply_markup: this.buildStartKeyboard(),
+          },
+        );
 
         // Onboarding for new users
         const isNewUser = user.createdAt > new Date(Date.now() - 60000); // Created within last minute
@@ -208,7 +244,7 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
 
     this.bot.command('help', async (ctx) => {
       try {
-        if (!await this.checkRateLimit(ctx)) return;
+        if (!(await this.checkRateLimit(ctx))) return;
 
         const chatId = ctx.chat?.id;
 
@@ -216,7 +252,10 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
           return;
         }
 
-        await this.sendHtmlMessage(chatId, this.formatterService.formatHelpMessage());
+        await this.sendHtmlMessage(
+          chatId,
+          this.formatterService.formatHelpMessage(),
+        );
       } catch (error) {
         Sentry.captureException(error);
         throw error;
@@ -224,7 +263,7 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
     });
     this.bot.command('history', async (ctx) => {
       try {
-        if (!await this.checkRateLimit(ctx)) return;
+        if (!(await this.checkRateLimit(ctx))) return;
 
         await this.handleHistoryCommand(ctx);
       } catch (error) {
@@ -235,7 +274,7 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
 
     this.bot.command('mywatch', async (ctx) => {
       try {
-        if (!await this.checkRateLimit(ctx)) return;
+        if (!(await this.checkRateLimit(ctx))) return;
 
         await this.handleMyWatchCommand(ctx);
       } catch (error) {
@@ -246,14 +285,17 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
 
     this.bot.command('unwatch', async (ctx) => {
       try {
-        if (!await this.checkRateLimit(ctx)) return;
+        if (!(await this.checkRateLimit(ctx))) return;
 
         const mintAddress = extractCommandArgument(ctx.message?.text);
 
         if (!mintAddress) {
           await this.replyInChat(
             ctx,
-            this.formatterService.formatUsageMessage('/unwatch', EXAMPLE_MINT_ADDRESS),
+            this.formatterService.formatUsageMessage(
+              '/unwatch',
+              EXAMPLE_MINT_ADDRESS,
+            ),
           );
           return;
         }
@@ -267,7 +309,7 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
 
     this.bot.command('stats', async (ctx) => {
       try {
-        if (!await this.checkRateLimit(ctx)) return;
+        if (!(await this.checkRateLimit(ctx))) return;
 
         await this.handleStatsCommand(ctx);
       } catch (error) {
@@ -307,14 +349,17 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
 
     this.bot.command('scan', async (ctx) => {
       try {
-        if (!await this.checkRateLimit(ctx)) return;
+        if (!(await this.checkRateLimit(ctx))) return;
 
         const mintAddress = extractCommandArgument(ctx.message?.text);
 
         if (!mintAddress) {
           await this.replyInChat(
             ctx,
-            this.formatterService.formatUsageMessage('/scan', EXAMPLE_MINT_ADDRESS),
+            this.formatterService.formatUsageMessage(
+              '/scan',
+              EXAMPLE_MINT_ADDRESS,
+            ),
           );
           return;
         }
@@ -328,14 +373,17 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
 
     this.bot.command('watch', async (ctx) => {
       try {
-        if (!await this.checkRateLimit(ctx)) return;
+        if (!(await this.checkRateLimit(ctx))) return;
 
         const mintAddress = extractCommandArgument(ctx.message?.text);
 
         if (!mintAddress) {
           await this.replyInChat(
             ctx,
-            this.formatterService.formatUsageMessage('/watch', EXAMPLE_MINT_ADDRESS),
+            this.formatterService.formatUsageMessage(
+              '/watch',
+              EXAMPLE_MINT_ADDRESS,
+            ),
           );
           return;
         }
@@ -377,13 +425,18 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
 
     this.bot.callbackQuery(/^history:/, async (ctx) => {
       await ctx.answerCallbackQuery();
-      const page = parseInt(extractCallbackValue(ctx.callbackQuery.data, 'history:') || '1');
+      const page = parseInt(
+        extractCallbackValue(ctx.callbackQuery.data, 'history:') || '1',
+      );
       await this.handleHistoryPage(ctx, page);
     });
 
     this.bot.callbackQuery(/^unwatch:/, async (ctx) => {
       await ctx.answerCallbackQuery();
-      const mintAddress = extractCallbackValue(ctx.callbackQuery.data, 'unwatch:');
+      const mintAddress = extractCallbackValue(
+        ctx.callbackQuery.data,
+        'unwatch:',
+      );
 
       if (!mintAddress) {
         return;
@@ -394,7 +447,10 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
 
     this.bot.callbackQuery(/^share:/, async (ctx) => {
       await ctx.answerCallbackQuery();
-      const mintAddress = extractCallbackValue(ctx.callbackQuery.data, 'share:');
+      const mintAddress = extractCallbackValue(
+        ctx.callbackQuery.data,
+        'share:',
+      );
 
       if (!mintAddress) {
         return;
@@ -415,6 +471,25 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
       }
 
       await this.runScanFlow(ctx, mintAddress);
+    });
+
+    this.bot.callbackQuery(/^trending_scan:/, async (ctx) => {
+      await ctx.answerCallbackQuery({
+        text: 'Starting scan...',
+      });
+
+      const mintAddress = extractCallbackValue(
+        ctx.callbackQuery.data,
+        'trending_scan:',
+      );
+
+      if (!mintAddress) {
+        return;
+      }
+
+      await this.runScanFlow(ctx, mintAddress, {
+        fromTrending: true,
+      });
     });
 
     this.bot.callbackQuery(/^re_scan:/, async (ctx) => {
@@ -481,7 +556,11 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
     this.bot.on('message:successful_payment', async (ctx) => {
       const payment = ctx.message?.successful_payment;
 
-      if (!payment || payment.invoice_payload !== PRO_PLAN_PAYLOAD || !ctx.from) {
+      if (
+        !payment ||
+        payment.invoice_payload !== PRO_PLAN_PAYLOAD ||
+        !ctx.from
+      ) {
         return;
       }
 
@@ -564,7 +643,7 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
   private async runScanFlow(
     ctx: Context,
     mintAddress: string,
-    options: { bypassCache?: boolean } = {},
+    options: { bypassCache?: boolean; fromTrending?: boolean } = {},
   ): Promise<void> {
     const chatId = ctx.chat?.id;
 
@@ -633,7 +712,10 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
         error instanceof Error ? error.stack : undefined,
       );
 
-      await this.sendHtmlMessage(chatId, this.getScanErrorMessage(error));
+      await this.sendHtmlMessage(
+        chatId,
+        this.getScanErrorMessage(error, options),
+      );
     }
   }
 
@@ -728,9 +810,13 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
     const hasPremium = await this.userService.canUsePremium(user.id);
 
     if (!hasPremium) {
-      await this.sendHtmlMessage(chatId, this.formatterService.formatWatchProOnlyMessage(), {
-        reply_markup: new InlineKeyboard().text('⭐ Go Pro', 'upgrade'),
-      });
+      await this.sendHtmlMessage(
+        chatId,
+        this.formatterService.formatWatchProOnlyMessage(),
+        {
+          reply_markup: new InlineKeyboard().text('⭐ Go Pro', 'upgrade'),
+        },
+      );
       return;
     }
 
@@ -762,7 +848,10 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
 
       await this.sendHtmlMessage(
         chatId,
-        this.formatterService.formatWatchCreatedMessage(mintAddress, result.score),
+        this.formatterService.formatWatchCreatedMessage(
+          mintAddress,
+          result.score,
+        ),
       );
     } catch (error) {
       this.logger.error(
@@ -797,7 +886,10 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
     const scans = await this.userService.getScanHistory(user.id, 1, 10);
 
     if (scans.length === 0) {
-      await this.sendHtmlMessage(chatId, this.formatterService.formatNoHistoryMessage());
+      await this.sendHtmlMessage(
+        chatId,
+        this.formatterService.formatNoHistoryMessage(),
+      );
       return;
     }
 
@@ -813,7 +905,7 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
       chatId,
       this.formatterService.formatHistoryMessage(scans, 1),
       {
-      reply_markup: InlineKeyboard.from(keyboard),
+        reply_markup: InlineKeyboard.from(keyboard),
       },
     );
   }
@@ -841,7 +933,10 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
     const scans = await this.userService.getScanHistory(user.id, page, 10);
 
     if (scans.length === 0) {
-      await this.sendHtmlMessage(chatId, this.formatterService.formatNoMoreHistoryMessage());
+      await this.sendHtmlMessage(
+        chatId,
+        this.formatterService.formatNoMoreHistoryMessage(),
+      );
       return;
     }
 
@@ -864,7 +959,7 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
       chatId,
       this.formatterService.formatHistoryMessage(scans, page),
       {
-      reply_markup: InlineKeyboard.from(keyboard),
+        reply_markup: InlineKeyboard.from(keyboard),
       },
     );
   }
@@ -904,19 +999,25 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
     }
 
     const keyboard = watchedTokens.map((token) => [
-      InlineKeyboard.text(`❌ Unwatch ${token.mintAddress.slice(0, 6)}...`, `unwatch:${token.mintAddress}`),
+      InlineKeyboard.text(
+        `❌ Unwatch ${token.mintAddress.slice(0, 6)}...`,
+        `unwatch:${token.mintAddress}`,
+      ),
     ]);
 
     await this.sendHtmlMessage(
       chatId,
       this.formatterService.formatWatchedTokensMessage(watchedTokens),
       {
-      reply_markup: InlineKeyboard.from(keyboard),
+        reply_markup: InlineKeyboard.from(keyboard),
       },
     );
   }
 
-  private async handleUnwatchCommand(ctx: Context, mintAddress: string): Promise<void> {
+  private async handleUnwatchCommand(
+    ctx: Context,
+    mintAddress: string,
+  ): Promise<void> {
     const chatId = ctx.chat?.id;
 
     if (!chatId) {
@@ -963,18 +1064,28 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
       return;
     }
 
-    const adminIds = process.env.ADMIN_IDS?.split(',').map(id => id.trim()) || [];
+    const adminIds =
+      process.env.ADMIN_IDS?.split(',').map((id) => id.trim()) || [];
     if (!adminIds.includes(ctx.from.id.toString())) {
-      await this.sendHtmlMessage(chatId, this.formatterService.formatAccessDeniedMessage());
+      await this.sendHtmlMessage(
+        chatId,
+        this.formatterService.formatAccessDeniedMessage(),
+      );
       return;
     }
 
     const stats = await this.adminService.getStats();
 
-    await this.sendHtmlMessage(chatId, this.formatterService.formatStatsMessage(stats));
+    await this.sendHtmlMessage(
+      chatId,
+      this.formatterService.formatStatsMessage(stats),
+    );
   }
 
-  private async handleShareCommand(ctx: Context, mintAddress: string): Promise<void> {
+  private async handleShareCommand(
+    ctx: Context,
+    mintAddress: string,
+  ): Promise<void> {
     const chatId = ctx.chat?.id;
 
     if (!chatId) {
@@ -1002,7 +1113,10 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
     });
 
     if (!lastScan) {
-      await this.sendHtmlMessage(chatId, this.formatterService.formatNoShareResultMessage());
+      await this.sendHtmlMessage(
+        chatId,
+        this.formatterService.formatNoShareResultMessage(),
+      );
       return;
     }
 
@@ -1047,7 +1161,7 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
 
   private async sendTrendingTokens(chatId: number | string): Promise<void> {
     try {
-      const tokens = await this.dexScreenerService.getTrendingTokens(5);
+      const tokens = await this.getValidatedTrendingTokens(5);
 
       if (tokens.length === 0) {
         await this.sendHtmlMessage(
@@ -1057,9 +1171,13 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
         return;
       }
 
-      await this.sendHtmlMessage(chatId, this.formatterService.formatTrendingMessage(tokens), {
-        reply_markup: this.buildTrendingKeyboard(tokens),
-      });
+      await this.sendHtmlMessage(
+        chatId,
+        this.formatterService.formatTrendingMessage(tokens),
+        {
+          reply_markup: this.buildTrendingKeyboard(tokens),
+        },
+      );
     } catch (error) {
       this.logger.error(
         'Trending token fetch failed',
@@ -1084,12 +1202,16 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
   }
 
   private async sendPremiumMessage(chatId: number | string): Promise<void> {
-    await this.sendHtmlMessage(chatId, this.formatterService.formatPremiumMessage(), {
-      reply_markup: new InlineKeyboard().text(
-        '💳 Upgrade to Pro — 900 ⭐',
-        'buy_pro',
-      ),
-    });
+    await this.sendHtmlMessage(
+      chatId,
+      this.formatterService.formatPremiumMessage(),
+      {
+        reply_markup: new InlineKeyboard().text(
+          '💳 Upgrade to Pro — 900 ⭐',
+          'buy_pro',
+        ),
+      },
+    );
   }
 
   private async sendProInvoice(ctx: Context): Promise<void> {
@@ -1203,7 +1325,10 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
     const keyboard = new InlineKeyboard();
 
     tokens.forEach((token, index) => {
-      keyboard.text(`🔍 Scan ${token.symbol}`, `scan:${token.mintAddress}`);
+      keyboard.text(
+        `🔍 Scan ${token.symbol}`,
+        `trending_scan:${token.mintAddress}`,
+      );
 
       if (index < tokens.length - 1) {
         keyboard.row();
@@ -1213,12 +1338,84 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
     return keyboard;
   }
 
-  private getScanErrorMessage(error: unknown): string {
+  private async getValidatedTrendingTokens(
+    limit: number,
+  ): Promise<TrendingToken[]> {
+    const cachedTokens =
+      this.cacheService.get<TrendingToken[]>(TRENDING_CACHE_KEY);
+
+    if (cachedTokens) {
+      return cachedTokens.slice(0, limit);
+    }
+
+    const candidateTokens = await this.dexScreenerService.getTrendingTokens(
+      Math.max(limit * 3, limit),
+    );
+
+    const validatedTokens = (
+      await Promise.all(
+        candidateTokens.map(async (token) => {
+          console.log(
+            'DexScreener token:',
+            token.tokenAddress,
+            'chainId:',
+            token.chainId,
+          );
+
+          if (!isValidSolanaPublicKey(token.tokenAddress)) {
+            return null;
+          }
+
+          try {
+            const mintInfo = await withTimeout(
+              this.solanaService.getMintInfo(token.tokenAddress),
+              TRENDING_MINT_VALIDATION_TIMEOUT_MS,
+              `Mint validation timed out for ${token.tokenAddress}`,
+            );
+
+            if (!mintInfo) {
+              return null;
+            }
+
+            return token;
+          } catch (error) {
+            this.logger.warn(
+              `Skipping trending token ${token.tokenAddress}: ${
+                error instanceof Error
+                  ? error.message
+                  : 'Unknown validation error'
+              }`,
+            );
+            return null;
+          }
+        }),
+      )
+    )
+      .filter((token): token is TrendingToken => token !== null)
+      .slice(0, limit);
+
+    this.cacheService.set(
+      TRENDING_CACHE_KEY,
+      validatedTokens,
+      TRENDING_CACHE_TTL_SECONDS,
+    );
+
+    return validatedTokens;
+  }
+
+  private getScanErrorMessage(
+    error: unknown,
+    options: { fromTrending?: boolean } = {},
+  ): string {
     if (error instanceof ScannerRpcError) {
       return this.formatterService.formatRpcUnavailableMessage();
     }
 
     if (error instanceof UnknownTokenError) {
+      if (options.fromTrending) {
+        return this.formatterService.formatTrendingScanUnavailableMessage();
+      }
+
       return this.formatterService.formatTokenNotFoundMessage();
     }
 

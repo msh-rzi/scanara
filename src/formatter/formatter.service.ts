@@ -313,6 +313,15 @@ export class FormatterService {
     ].join('\n');
   }
 
+  formatTrendingScanUnavailableMessage(): string {
+    return [
+      '🔧 <b>Scan Unavailable</b>',
+      REPORT_DIVIDER,
+      "This token's data is temporarily unavailable on-chain.",
+      '<i>Try again in a moment or check /trending for other tokens.</i>',
+    ].join('\n');
+  }
+
   formatGenericScanFailedMessage(): string {
     return [
       '⚠️ <b>Scan Failed</b>',
@@ -582,14 +591,8 @@ export class FormatterService {
     ].join('\n');
   }
 
-  formatScanProgressMessage(
-    mintAddress: string,
-    step: 1 | 2 | 3 | 4,
-  ): string {
-    const lines = [
-      '⏳ <b>Scanning token...</b>',
-      code(mintAddress),
-    ];
+  formatScanProgressMessage(mintAddress: string, step: 1 | 2 | 3 | 4): string {
+    const lines = ['⏳ <b>Scanning token...</b>', code(mintAddress)];
 
     if (step >= 2) {
       lines.push('✔ RPC connected');
@@ -617,9 +620,10 @@ export class FormatterService {
 
   formatResult(result: ScanResult): string {
     const verdict = getVerdict(result.score);
-    const tokenDisplay = result.metadata.name && result.metadata.symbol
-      ? `${result.metadata.symbol} - ${result.metadata.name}`
-      : shortenAddress(result.mintAddress);
+    const tokenDisplay =
+      result.metadata.name && result.metadata.symbol
+        ? `${result.metadata.symbol} - ${result.metadata.name}`
+        : shortenAddress(result.mintAddress);
 
     return [
       REPORT_DIVIDER,
@@ -665,7 +669,19 @@ export class FormatterService {
   }
 
   private numberEmoji(index: number): string {
-    const numbers = ['0️⃣', '1️⃣', '2️⃣', '3️⃣', '4️⃣', '5️⃣', '6️⃣', '7️⃣', '8️⃣', '9️⃣', '🔟'];
+    const numbers = [
+      '0️⃣',
+      '1️⃣',
+      '2️⃣',
+      '3️⃣',
+      '4️⃣',
+      '5️⃣',
+      '6️⃣',
+      '7️⃣',
+      '8️⃣',
+      '9️⃣',
+      '🔟',
+    ];
 
     return numbers[index] ?? `${index}.`;
   }
