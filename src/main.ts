@@ -2,6 +2,7 @@ import { NestFactory } from '@nestjs/core';
 import { AppModule } from './app.module';
 import * as Sentry from '@sentry/nestjs';
 
+
 async function bootstrap() {
   Sentry.init({
     dsn: process.env.SENTRY_DSN,

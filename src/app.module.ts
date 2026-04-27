@@ -14,6 +14,8 @@ import { SolanaModule } from './solana/solana.module';
 import { TelegramModule } from './telegram/telegram.module';
 import { UserModule } from './user/user.module';
 import { AdminModule } from './admin/admin.module';
+import { SentryGlobalFilter,  } from '@sentry/nestjs/setup';
+import { APP_FILTER } from '@nestjs/core';
 
 @Module({
   imports: [
@@ -35,6 +37,9 @@ import { AdminModule } from './admin/admin.module';
     AdminModule,
   ],
   controllers: [AppController],
-  providers: [AppService],
+  providers: [AppService, {
+    provide: APP_FILTER,
+    useClass: SentryGlobalFilter
+  }],
 })
 export class AppModule {}
